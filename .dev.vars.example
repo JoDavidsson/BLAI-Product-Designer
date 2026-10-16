@@ -1,0 +1,2 @@
+# Copy to .dev.vars only for local development. Never commit real credentials.
+DEV_AUTH=local

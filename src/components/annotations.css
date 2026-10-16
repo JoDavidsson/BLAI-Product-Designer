@@ -1,0 +1,456 @@
+.annotations-panel {
+  width: 320px;
+  min-width: 280px;
+  height: 100%;
+  min-height: 360px;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-left: 1px solid #e9e8ed;
+  color: #232833;
+  font-size: 13px;
+}
+.annotations-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 21px 19px 7px;
+}
+.annotations-heading > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.annotations-heading h3 {
+  font-size: 14px;
+  margin: 0;
+  font-weight: 600;
+}
+.annotation-count {
+  padding: 2px 6px;
+  min-width: 19px;
+  text-align: center;
+  font-size: 10px;
+  color: #827a9e;
+  background: #f1eff7;
+  border-radius: 5px;
+}
+.annotations-subheading {
+  color: #858993;
+  font-size: 11px;
+  padding: 0 19px 18px;
+}
+.annotations-resolved-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #858993;
+  font-size: 11px;
+  padding: 0 19px 12px;
+}
+.annotations-resolved-toggle input {
+  accent-color: #7360df;
+}
+.annotation-thread-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+.annotation-empty {
+  text-align: center;
+  padding: 32px 27px;
+}
+.annotation-empty > span {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  background: #f4f1fa;
+  color: #9b8fc8;
+  margin: 0 auto 17px;
+}
+.annotation-empty strong {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+.annotation-empty p {
+  font-size: 12px;
+  color: #90929b;
+  line-height: 1.75;
+  margin: 8px 0 0;
+}
+.annotation-thread {
+  padding: 19px;
+  border-top: 1px solid #f0eff3;
+  scroll-margin: 16px;
+  transition: background 0.2s;
+}
+.annotation-thread.is-selected {
+  background: #fbfaff;
+  box-shadow: inset 3px 0 #9180e4;
+}
+.annotation-thread-meta {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 11px;
+}
+.annotation-avatar {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 10px;
+  background: #eee9df;
+  color: #81745e;
+  font-weight: 600;
+}
+.annotation-thread-meta strong {
+  font-weight: 600;
+}
+.annotation-thread-meta time {
+  font-size: 10px;
+  color: #a0a2aa;
+}
+.annotation-status {
+  margin-left: auto;
+  display: flex;
+  gap: 3px;
+  align-items: center;
+  font-size: 9px;
+  text-transform: capitalize;
+  color: #8d83ad;
+}
+.annotation-status.is-accepted {
+  color: #508576;
+}
+.annotation-status.is-resolved {
+  color: #92959c;
+}
+.annotation-status-dot {
+  height: 4px;
+  width: 4px;
+  border-radius: 50%;
+  background: #a99bcf;
+}
+.annotation-target {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 12px;
+  color: #96929f;
+  font-size: 10px;
+}
+.annotation-target > span {
+  display: inline-grid;
+  place-items: center;
+  background: #f0ecfb;
+  color: #9a87cf;
+  font-size: 9px;
+  width: 15px;
+  height: 15px;
+  border-radius: 5px 5px 5px 0;
+}
+.annotation-previous-location {
+  color: #8d8599;
+  font-size: 10px;
+  line-height: 1.6;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.annotation-body {
+  line-height: 1.7;
+  color: #555966;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  margin: 9px 0 12px;
+}
+.annotation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 13px;
+}
+.annotation-actions button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 10px;
+  color: #8e8d99;
+  cursor: pointer;
+}
+.annotation-actions button:hover {
+  color: #7360df;
+}
+.annotation-requirement {
+  color: #568675;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  text-decoration: none;
+  margin: 0 0 12px;
+}
+.annotation-requirement:hover {
+  text-decoration: underline;
+}
+.annotation-replies {
+  margin-top: 14px;
+  border-left: 1px solid #eae7f0;
+  padding-left: 10px;
+}
+.annotation-reply {
+  display: flex;
+  gap: 6px;
+  padding-top: 10px;
+  color: #a4a1ad;
+}
+.annotation-reply > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.annotation-reply strong {
+  color: #666571;
+  font-size: 10px;
+  font-weight: 600;
+}
+.annotation-reply time {
+  font-weight: 400;
+  color: #a4a1ad;
+  margin-left: 5px;
+  font-size: 9px;
+}
+.annotation-reply p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #777580;
+  margin: 5px 0;
+}
+.annotation-reply-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 5px;
+  margin-top: 12px;
+}
+.annotations-panel textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  background: #faf9fc;
+  color: #41414e;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+  border: 1px solid #e9e6f0;
+  border-radius: 8px;
+  padding: 10px;
+  outline: none;
+}
+.annotations-panel textarea:focus {
+  border-color: #a899e6;
+  box-shadow: 0 0 0 2px #eee9fb;
+}
+.annotations-panel textarea::placeholder {
+  color: #aaa6b5;
+}
+.annotation-compose-area {
+  border-top: 1px solid #e9e8ed;
+  padding: 14px 16px;
+}
+.annotation-compose-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: #9992ab;
+  margin-bottom: 8px;
+}
+.annotation-compose-label > span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.annotation-compose-dot {
+  width: 5px;
+  height: 5px;
+  background: #9a88db;
+  border-radius: 50%;
+}
+.annotation-compose-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 9px;
+}
+.annotation-compose-footer > span {
+  font-size: 9px;
+  color: #aaa5b5;
+}
+.an-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: #8b8897;
+  padding: 5px;
+  cursor: pointer;
+}
+.an-icon:hover {
+  background: #f1eef8;
+  color: #7360df;
+}
+.an-primary {
+  background: #7360df;
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.an-primary:disabled,
+.an-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.an-primary:hover:not(:disabled) {
+  background: #6250cb;
+}
+.annotation-new-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  background: #faf9fc;
+  border: 1px solid #e9e6f1;
+  border-radius: 7px;
+  padding: 10px;
+  color: #847899;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.annotation-new-button:hover {
+  border-color: #beafe8;
+  color: #7360df;
+}
+.an-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.annotation-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+.annotation-overlay.is-adding {
+  pointer-events: auto;
+  cursor: crosshair;
+  outline: 2px dashed #9b87df;
+  outline-offset: -2px;
+}
+.annotation-overlay:focus-visible {
+  outline: 3px solid #7360df;
+  outline-offset: 2px;
+}
+.annotation-leaders {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.annotation-leaders path {
+  fill: none;
+  stroke: #a491dc;
+  stroke-width: 1.4px;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+.annotation-leaders path.is-selected {
+  stroke: #7158cb;
+  stroke-width: 1.8px;
+}
+.annotation-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 50% 50% 50% 3px;
+  border: 2px solid white;
+  background: #9c88d8;
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px #53407c30;
+}
+.annotation-marker.is-selected .annotation-pin {
+  background: #7158cb;
+  outline: 3px solid #9c88d83b;
+}
+.annotation-marker.is-accepted .annotation-pin {
+  background: #679a88;
+}
+.annotation-marker.is-resolved .annotation-pin {
+  background: #a6a4ae;
+}
+.annotation-label {
+  position: absolute;
+  transform: translateY(-50%);
+  width: max-content;
+  max-width: min(140px, 26%);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  border: 1px solid #e9e2f4;
+  background: #ffffffed;
+  box-shadow: 0 2px 8px #5948760c;
+  color: #75668f;
+  font: inherit;
+  font-size: 9px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  pointer-events: auto;
+  text-align: left;
+}
+.annotation-label.is-left {
+  transform: translate(-100%, -50%);
+}
+.annotation-marker.is-selected .annotation-label {
+  border-color: #bba7ed;
+  color: #6952ad;
+}
+@media (max-width: 900px) {
+  .annotations-panel {
+    width: 280px;
+    min-width: 260px;
+  }
+}

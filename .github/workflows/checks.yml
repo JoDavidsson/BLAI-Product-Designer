@@ -1,0 +1,17 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:helper
+      - run: npm run build
+        env:
+          CLOUDFLARE_SEND_METRICS: 'false'

@@ -1,0 +1,7 @@
+node_modules
+dist
+.wrangler
+.dev.vars
+.blai-designer
+docs/screenshots
+package-lock.json
