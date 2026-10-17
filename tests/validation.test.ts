@@ -134,12 +134,6 @@ describe('project and AI data safety', () => {
     const next = proposalToProject(
       p,
       {
-        id: 'proposal',
-        jobId: 'job',
-        projectId: p.id,
-        baseRevision: 1,
-        createdAt: p.createdAt,
-        status: 'pending',
         kind: 'plan.assist',
         result: result(),
       },
@@ -159,12 +153,6 @@ describe('reference reconciliation', () => {
     const next = proposalToProject(
       p,
       {
-        id: 'proposal',
-        jobId: 'job',
-        projectId: p.id,
-        baseRevision: 1,
-        createdAt: p.createdAt,
-        status: 'pending',
         kind: 'wireframe.generate',
         result: {
           ...result(),

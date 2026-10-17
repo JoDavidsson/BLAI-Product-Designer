@@ -5,7 +5,8 @@ import { chromium, expect } from '@playwright/test';
 // Uses a dedicated sample project and an isolated browser context.
 const baseURL = process.env.BLAI_TEST_URL || 'http://127.0.0.1:5173';
 const browser = await chromium.launch({
-  executablePath: process.env.BLAI_CHROMIUM || '/usr/bin/chromium',
+  executablePath:
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || process.env.BLAI_CHROMIUM || '/usr/bin/chromium',
   args: ['--no-sandbox'],
 });
 const context = await browser.newContext({ viewport: { width: 1440, height: 1040 } });
@@ -84,6 +85,12 @@ try {
         exact: true,
       })
       .click();
+    await expect(
+      page.getByRole('dialog', {
+        name: kind === 'reference' ? 'Add a reference' : 'Add a screenshot',
+        exact: true,
+      }),
+    ).toBeVisible();
     await page
       .locator('input[type="file"]')
       .setInputFiles({ name, mimeType: 'image/png', buffer: png });
@@ -109,7 +116,7 @@ try {
   await page.getByRole('button', { name: 'Moodboard', exact: true }).click();
   await upload('Warm direction.png', 'reference');
   await page.getByRole('button', { name: 'Open Warm direction', exact: true }).click();
-  await expect(page.locator('.board-viewer')).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Reference: Warm direction' })).toBeVisible();
   await expect(page.locator('.board-image-wrapper > img')).toHaveJSProperty('naturalWidth', 960);
   await pinComment('Keep the warm paper background and the generous breathing room.');
   await page.getByRole('button', { name: 'Reply', exact: true }).click();
@@ -126,15 +133,43 @@ try {
   await page
     .getByRole('textbox', { name: 'Reference title', exact: true })
     .fill('Quiet confidence');
-  await page.getByRole('textbox', { name: 'Reference note', exact: true }).click();
+  // Closing the native dialog does not blur fields before React unmounts them.
+  // Every valid metadata edit must already belong to the autosaved project.
+  await page.getByRole('textbox', { name: 'Reference title', exact: true }).press('Escape');
+  await expect(page.locator('.board-viewer')).not.toBeVisible();
+  await page.getByRole('button', { name: 'Open Quiet confidence', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Reference title', exact: true })).toHaveValue(
+    'Quiet confidence',
+  );
   await page
     .getByRole('textbox', { name: 'Reference note', exact: true })
     .fill('Natural colors and deliberate whitespace.');
-  await page.getByRole('textbox', { name: 'Reference source URL', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Reference note', exact: true }).press('Escape');
+  await expect(page.locator('.board-viewer')).not.toBeVisible();
+  await page.getByRole('button', { name: 'Open Quiet confidence', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: 'Reference note', exact: true })).toHaveValue(
+    'Natural colors and deliberate whitespace.',
+  );
   await page
     .getByRole('textbox', { name: 'Reference source URL', exact: true })
     .fill('https://example.com/design-reference');
-  await page.getByRole('textbox', { name: 'Reference source URL', exact: true }).press('Tab');
+  await page.getByRole('textbox', { name: 'Reference source URL', exact: true }).press('Escape');
+  await expect(page.locator('.board-viewer')).not.toBeVisible();
+  await page.getByRole('button', { name: 'Open Quiet confidence', exact: true }).click();
+  await expect(
+    page.getByRole('textbox', { name: 'Reference source URL', exact: true }),
+  ).toHaveValue('https://example.com/design-reference');
+  await page.getByRole('textbox', { name: 'Reference source URL', exact: true }).fill('https:');
+  await expect(
+    page.getByRole('textbox', { name: 'Reference source URL', exact: true }),
+  ).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.locator('#board-source-error')).toContainText('previous source is kept');
+  await page.getByRole('textbox', { name: 'Reference source URL', exact: true }).press('Escape');
+  await expect(page.locator('.board-viewer')).not.toBeVisible();
+  await page.getByRole('button', { name: 'Open Quiet confidence', exact: true }).click();
+  await expect(
+    page.getByRole('textbox', { name: 'Reference source URL', exact: true }),
+  ).toHaveValue('https://example.com/design-reference');
   await expect
     .poll(async () => {
       const project = await readProject(),
@@ -342,6 +377,9 @@ try {
           'replies',
           'acceptance links',
           'metadata persistence',
+          'title, note, and source URL survive Escape without blur',
+          'invalid source drafts preserve the saved URL',
+          'named accessible dialogs',
           'reload persistence',
           'resolve/reopen synchronizes requirement',
           'screenshot review',

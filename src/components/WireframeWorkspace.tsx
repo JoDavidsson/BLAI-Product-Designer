@@ -1,10 +1,12 @@
 import {
   cloneElement,
+  Fragment,
   isValidElement,
   useEffect,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactElement,
 } from 'react';
@@ -45,6 +47,7 @@ import {
   Monitor,
   MousePointer2,
   Play,
+  ClipboardPaste,
   Plus,
   RectangleHorizontal,
   Rows3,
@@ -74,6 +77,13 @@ import {
 } from '../../shared/model';
 import AnnotationPanel from './AnnotationPanel';
 import AnnotationOverlay from './AnnotationOverlay';
+import {
+  CONTAINERS,
+  cloneWireNode,
+  nodeParent,
+  reparentNode,
+  wireframeLimitError,
+} from '../lib/wireframe-tree';
 import './wireframe.css';
 
 interface Props {
@@ -84,7 +94,6 @@ interface Props {
   helperOnline: boolean;
 }
 
-const CONTAINERS: NodeType[] = ['section', 'row', 'column', 'card'];
 const STATES: ScreenState[] = ['default', 'loading', 'empty', 'error', 'success'];
 const COMPONENTS = [
   { type: 'heading', name: 'Heading', icon: Type, detail: 'Make a statement' },
@@ -101,9 +110,6 @@ const COMPONENTS = [
   { type: 'divider', name: 'Divider', icon: Minus, detail: 'A quiet separation' },
 ] satisfies { type: NodeType; name: string; icon: typeof Type; detail: string }[];
 
-function cloneNode(node: WireNode): WireNode {
-  return { ...structuredClone(node), id: uid('node'), children: node.children.map(cloneNode) };
-}
 function removeNode(nodes: WireNode[], id: string): WireNode[] {
   return nodes
     .filter((node) => node.id !== id)
@@ -278,6 +284,8 @@ function EditableNode({ node, ...props }: RenderProps & { node: WireNode }) {
       ref={sortable.setNodeRef}
       className={`wf-node wf-node-${node.type}${selected ? ' is-selected' : ''}${sortable.isDragging ? ' is-dragging' : ''}${props.commentMode ? ' is-commenting' : ''}`}
       data-node-id={node.id}
+      tabIndex={selected ? 0 : -1}
+      aria-label={`${node.name} component`}
       style={{
         ...nodeStyle(node, props.design),
         transform: CSS.Transform.toString(sortable.transform),
@@ -285,6 +293,7 @@ function EditableNode({ node, ...props }: RenderProps & { node: WireNode }) {
       }}
       onClick={(event) => {
         event.stopPropagation();
+        event.currentTarget.focus({ preventScroll: true });
         props.onSelect?.(node, event);
       }}
     >
@@ -416,13 +425,18 @@ export default function WireframeWorkspace({
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiMode, setAiMode] = useState<'generate' | 'refine'>('generate');
   const [newState, setNewState] = useState<ScreenState>('empty');
+  const [clipboard, setClipboard] = useState<WireNode>();
+  const [screenName, setScreenName] = useState('');
   const viewport = useRef<HTMLDivElement>(null);
+  const aiDialog = useRef<HTMLElement>(null);
+  const aiReturnFocus = useRef<HTMLElement | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 7 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
   const screen = project.screens.find((item) => item.id === screenId) ?? project.screens[0];
   const selected = screen && selectedId ? findNode(screen.nodes, selectedId) : undefined;
+  const parentId = selected && screen ? (nodeParent(screen.nodes, selected.id) ?? '') : '';
   const frameWidth = screen?.platform === 'mobile' ? 375 : 900;
   const screenComments = project.comments.filter(
     (comment) => comment.target.screenId === screen?.id,
@@ -432,6 +446,9 @@ export default function WireframeWorkspace({
   useEffect(() => {
     if (screen && screen.id !== screenId) setScreenId(screen.id);
   }, [screen?.id, screenId]);
+  useEffect(() => {
+    setScreenName(screen?.name ?? '');
+  }, [screen?.id, screen?.name]);
   useEffect(() => {
     setSelectedId(undefined);
     setCommentTarget(undefined);
@@ -447,27 +464,89 @@ export default function WireframeWorkspace({
     return () => observer.disconnect();
   }, [frameWidth, preview]);
   useEffect(() => {
-    function handleKey(event: KeyboardEvent) {
-      const target = event.target as HTMLElement;
-      if (target.matches('input, textarea, select, [contenteditable="true"]')) return;
+    if (!aiOpen) return;
+    aiDialog.current?.querySelector('textarea')?.focus();
+    return () => aiReturnFocus.current?.focus({ preventScroll: true });
+  }, [aiOpen]);
+
+  function openDesigner(mode: 'generate' | 'refine') {
+    aiReturnFocus.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setAiMode(mode);
+    setAiOpen(true);
+  }
+
+  function handleKey(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement;
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+    if (aiOpen) {
       if (event.key === 'Escape') {
-        setSelectedId(undefined);
-        setCommentMode(false);
+        event.preventDefault();
         setAiOpen(false);
       }
+      if (event.key === 'Tab') {
+        const controls = [
+          ...(aiDialog.current?.querySelectorAll<HTMLElement>(
+            'button:not(:disabled), textarea, input, select, [tabindex="0"]',
+          ) ?? []),
+        ];
+        const index = controls.indexOf(target);
+        if (index === -1 || (event.shiftKey ? index === 0 : index === controls.length - 1)) {
+          event.preventDefault();
+          controls[event.shiftKey ? controls.length - 1 : 0]?.focus();
+        }
+      }
+      return;
     }
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, []);
+    if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (event.key === 'Escape') {
+      setSelectedId(undefined);
+      setCommentMode(false);
+      return;
+    }
+    if (preview || !target.closest('.wf-canvas-scroll, .wf-layer-list')) return;
+    const command = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
+    if (command && event.key.toLowerCase() === 'd' && selected) {
+      event.preventDefault();
+      duplicateSelected();
+    } else if (
+      command &&
+      event.key.toLowerCase() === 'c' &&
+      selected &&
+      !window.getSelection()?.toString()
+    ) {
+      event.preventDefault();
+      copySelected();
+    } else if (command && event.key.toLowerCase() === 'v' && clipboard) {
+      event.preventDefault();
+      pasteComponent();
+    } else if (
+      (event.key === 'Delete' || event.key === 'Backspace') &&
+      selected &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey
+    ) {
+      event.preventDefault();
+      deleteSelected();
+    }
+  }
+
+  function changeScreens(screens: Screen[]): boolean {
+    const error = wireframeLimitError(screens);
+    if (error) {
+      onToast(error);
+      return false;
+    }
+    onChange({ ...project, screens });
+    return true;
+  }
 
   function updateScreen(changes: Partial<Screen>) {
-    if (!screen) return;
-    onChange({
-      ...project,
-      screens: project.screens.map((item) =>
-        item.id === screen.id ? { ...item, ...changes } : item,
-      ),
-    });
+    if (!screen) return false;
+    return changeScreens(
+      project.screens.map((item) => (item.id === screen.id ? { ...item, ...changes } : item)),
+    );
   }
   function updateNode(changes: Partial<WireNode>) {
     if (screen && selected)
@@ -491,19 +570,21 @@ export default function WireframeWorkspace({
       description: '',
       nodes: starterNodes('Untitled screen'),
     };
-    onChange({ ...project, screens: [...project.screens, next] });
+    if (!changeScreens([...project.screens, next])) return;
     selectScreen(next.id);
     setLibrary(false);
     setPreview(false);
   }
   function duplicateScreen(state?: ScreenState) {
     if (!screen) return;
+    const nextId = uid('screen');
+    const suffix = ` · ${state || 'copy'}`;
     const next: Screen = {
       ...structuredClone(screen),
-      id: uid('screen'),
-      name: `${screen.name} · ${state || 'copy'}`,
+      id: nextId,
+      name: `${screen.name.slice(0, 160 - suffix.length)}${suffix}`,
       state: state || screen.state,
-      nodes: screen.nodes.map(cloneNode),
+      nodes: screen.nodes.map((node) => cloneWireNode(node, { from: screen.id, to: nextId })),
     };
     if (state && state !== 'default') {
       const labels = {
@@ -539,7 +620,7 @@ export default function WireframeWorkspace({
         );
       next.nodes = [...next.nodes.filter((node) => node.type === 'nav'), stateCard];
     }
-    onChange({ ...project, screens: [...project.screens, next] });
+    if (!changeScreens([...project.screens, next])) return;
     selectScreen(next.id);
     onToast(state ? `Created an editable ${state} state` : 'Screen duplicated');
   }
@@ -564,14 +645,16 @@ export default function WireframeWorkspace({
       onToast('Add a screen first');
       return;
     }
-    if (selected && CONTAINERS.includes(selected.type))
-      updateScreen({
-        nodes: mapNode(screen.nodes, selected.id, (target) => ({
-          ...target,
-          children: [...target.children, node],
-        })),
-      });
-    else updateScreen({ nodes: [...screen.nodes, node] });
+    const updated =
+      selected && CONTAINERS.includes(selected.type)
+        ? updateScreen({
+            nodes: mapNode(screen.nodes, selected.id, (target) => ({
+              ...target,
+              children: [...target.children, node],
+            })),
+          })
+        : updateScreen({ nodes: [...screen.nodes, node] });
+    if (!updated) return;
     setSelectedId(node.id);
     setInspector('properties');
   }
@@ -606,10 +689,23 @@ export default function WireframeWorkspace({
     const nodes = structuredClone(screen.nodes);
     const list = containingList(nodes, selected.id);
     if (!list) return;
-    const copy = cloneNode(selected);
+    const copy = cloneWireNode(selected);
     list.splice(list.findIndex((node) => node.id === selected.id) + 1, 0, copy);
-    updateScreen({ nodes });
+    if (!updateScreen({ nodes })) return;
     setSelectedId(copy.id);
+  }
+  function copySelected() {
+    if (!selected) return;
+    setClipboard(structuredClone(selected));
+    onToast(`Copied “${selected.name}”. Paste it into this screen or another screen.`);
+  }
+  function pasteComponent() {
+    if (clipboard) insertNode(cloneWireNode(clipboard));
+  }
+  function changeParent(nextParent: string) {
+    if (!screen || !selected) return;
+    const nodes = reparentNode(screen.nodes, selected.id, nextParent);
+    if (nodes) updateScreen({ nodes });
   }
   function moveSelected(direction: -1 | 1) {
     if (!screen || !selected) return;
@@ -635,7 +731,10 @@ export default function WireframeWorkspace({
       sourceList.findIndex((node) => node.id === source.id),
       1,
     );
-    targetList.splice(targetIndex, 0, source);
+    const target = findNode(nodes, String(event.over.id));
+    if (target && CONTAINERS.includes(target.type) && target.children.length === 0)
+      target.children.push(source);
+    else targetList.splice(targetIndex, 0, source);
     updateScreen({ nodes });
   }
   function commentAt(node: WireNode | undefined, event: MouseEvent<HTMLDivElement>) {
@@ -667,8 +766,8 @@ export default function WireframeWorkspace({
   }
 
   return (
-    <div className={`wireframe-workspace${preview ? ' is-preview' : ''}`}>
-      <div className="wf-topbar">
+    <div className={`wireframe-workspace${preview ? ' is-preview' : ''}`} onKeyDown={handleKey}>
+      <div className="wf-topbar" inert={aiOpen}>
         <div className="wf-workspace-title">
           <span className="wf-eyebrow">DESIGN THE EXPERIENCE</span>
           <h1>
@@ -691,17 +790,14 @@ export default function WireframeWorkspace({
           </button>
           <button
             className="wf-button wf-primary"
-            onClick={() => {
-              setAiMode(project.screens.length ? 'refine' : 'generate');
-              setAiOpen(true);
-            }}
+            onClick={() => openDesigner(project.screens.length ? 'refine' : 'generate')}
           >
             <Sparkles size={15} />
             <span>{project.screens.length ? 'Design with AI' : 'Generate from plan'}</span>
           </button>
         </div>
       </div>
-      <div className="wf-editor">
+      <div className="wf-editor" inert={aiOpen}>
         <aside className="wf-sidebar">
           <div className="wf-sidebar-tabs">
             <button className={!library ? 'active' : ''} onClick={() => setLibrary(false)}>
@@ -858,6 +954,19 @@ export default function WireframeWorkspace({
               {!preview && (
                 <>
                   <button
+                    className="wf-icon-button"
+                    onClick={pasteComponent}
+                    disabled={!clipboard || !screen}
+                    title={
+                      clipboard
+                        ? `Paste “${clipboard.name}” (Ctrl/Cmd+V on canvas)`
+                        : 'Copy a component to reuse it on any screen'
+                    }
+                    aria-label="Paste component"
+                  >
+                    <ClipboardPaste size={16} />
+                  </button>
+                  <button
                     className={`wf-icon-button${!commentMode ? ' active' : ''}`}
                     onClick={() => setCommentMode(false)}
                     title="Select elements"
@@ -904,7 +1013,12 @@ export default function WireframeWorkspace({
               <span>Inputs are interactive.</span>
             </div>
           )}
-          <div className="wf-canvas-scroll" ref={viewport}>
+          <div
+            className="wf-canvas-scroll"
+            ref={viewport}
+            tabIndex={0}
+            aria-label="Wireframe canvas"
+          >
             {screen ? (
               <div
                 className="wf-canvas-stage"
@@ -1030,13 +1144,7 @@ export default function WireframeWorkspace({
                   Let AI turn your product plan into an editable first draft, or start with a screen
                   of your own.
                 </p>
-                <button
-                  className="wf-button wf-primary"
-                  onClick={() => {
-                    setAiMode('generate');
-                    setAiOpen(true);
-                  }}
-                >
+                <button className="wf-button wf-primary" onClick={() => openDesigner('generate')}>
                   <Sparkles size={15} /> Generate from your plan
                 </button>
                 <button className="wf-text-button" onClick={() => addScreen()}>
@@ -1105,7 +1213,7 @@ export default function WireframeWorkspace({
               />
             ) : (
               <div className="wf-properties-scroll">
-                {selected ? (
+                {selected && screen ? (
                   <>
                     <div className="wf-property-heading">
                       <span className="wf-object-icon">
@@ -1126,6 +1234,7 @@ export default function WireframeWorkspace({
                     <PropertyField label="Layer name">
                       <input
                         value={selected.name}
+                        maxLength={160}
                         onChange={(event) => updateNode({ name: event.target.value })}
                       />
                     </PropertyField>
@@ -1134,12 +1243,28 @@ export default function WireframeWorkspace({
                         <textarea
                           rows={selected.type === 'text' ? 4 : 3}
                           value={selected.text}
+                          maxLength={4000}
                           onChange={(event) => updateNode({ text: event.target.value })}
                         />
                       </PropertyField>
                     )}
                     <div className="wf-property-section">
                       <h3>Layout & appearance</h3>
+                      {CONTAINERS.includes(selected.type) && (
+                        <PropertyField label="Container layout">
+                          <select
+                            value={selected.type}
+                            onChange={(event) =>
+                              updateNode({ type: event.target.value as NodeType })
+                            }
+                          >
+                            <option value="section">Section</option>
+                            <option value="row">Row · side by side</option>
+                            <option value="column">Column · stacked</option>
+                            <option value="card">Card</option>
+                          </select>
+                        </PropertyField>
+                      )}
                       <div className="wf-field-pair">
                         <PropertyField label="Padding">
                           <input
@@ -1299,22 +1424,73 @@ export default function WireframeWorkspace({
                     )}
                     <div className="wf-property-section">
                       <h3>Arrange</h3>
+                      <PropertyField label="Inside container">
+                        <select
+                          value={parentId}
+                          onChange={(event) => changeParent(event.target.value)}
+                        >
+                          <option value="">Screen root</option>
+                          <ContainerOptions nodes={screen.nodes} exclude={selected.id} />
+                        </select>
+                      </PropertyField>
+                      <p className="wf-field-help">
+                        Move this component with its contents and notes.
+                      </p>
+                      {parentId && (
+                        <button
+                          className="wf-text-button"
+                          onClick={() => setSelectedId(parentId)}
+                          aria-label="Select parent container"
+                        >
+                          <ArrowUp size={13} /> Select parent
+                        </button>
+                      )}
                       <div className="wf-arrange-buttons">
-                        <button title="Move up" onClick={() => moveSelected(-1)}>
+                        <button
+                          title="Move up"
+                          disabled={
+                            containingList(screen.nodes, selected.id)?.[0]?.id === selected.id
+                          }
+                          onClick={() => moveSelected(-1)}
+                        >
                           <ArrowUp size={15} /> Up
                         </button>
-                        <button title="Move down" onClick={() => moveSelected(1)}>
+                        <button
+                          title="Move down"
+                          disabled={
+                            containingList(screen.nodes, selected.id)?.at(-1)?.id === selected.id
+                          }
+                          onClick={() => moveSelected(1)}
+                        >
                           <ArrowDown size={15} /> Down
                         </button>
                       </div>
                       <div className="wf-arrange-buttons">
-                        <button onClick={duplicateSelected}>
+                        <button
+                          onClick={duplicateSelected}
+                          title="Duplicate (Ctrl/Cmd+D on canvas)"
+                        >
                           <Copy size={14} /> Duplicate
                         </button>
-                        <button className="wf-danger-text" onClick={deleteSelected}>
+                        <button
+                          className="wf-danger-text"
+                          onClick={deleteSelected}
+                          title="Delete (Delete or Backspace on canvas)"
+                        >
                           <Trash2 size={14} /> Delete
                         </button>
                       </div>
+                      <button
+                        className="wf-button wf-full wf-copy-component"
+                        onClick={copySelected}
+                        title="Copy (Ctrl/Cmd+C on canvas)"
+                      >
+                        <Copy size={14} /> Copy to another screen
+                      </button>
+                      <p className="wf-field-help">
+                        On the canvas: Ctrl/Cmd+C, V, D to copy, paste, duplicate. Delete removes
+                        the selection.
+                      </p>
                     </div>
                     <button
                       className="wf-comment-element"
@@ -1351,8 +1527,17 @@ export default function WireframeWorkspace({
                     </div>
                     <PropertyField label="Screen name">
                       <input
-                        value={screen.name}
-                        onChange={(event) => updateScreen({ name: event.target.value })}
+                        value={screenName}
+                        maxLength={160}
+                        onChange={(event) => setScreenName(event.target.value)}
+                        onBlur={() => {
+                          const name = screenName.trim();
+                          if (name && name !== screen.name) updateScreen({ name });
+                          else setScreenName(screen.name);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') event.currentTarget.blur();
+                        }}
                       />
                     </PropertyField>
                     <PropertyField label="Purpose">
@@ -1360,6 +1545,7 @@ export default function WireframeWorkspace({
                         rows={3}
                         placeholder="What should someone do on this screen?"
                         value={screen.description}
+                        maxLength={4000}
                         onChange={(event) => updateScreen({ description: event.target.value })}
                       />
                     </PropertyField>
@@ -1459,6 +1645,7 @@ export default function WireframeWorkspace({
           }}
         >
           <section
+            ref={aiDialog}
             className="wf-ai-dialog"
             role="dialog"
             aria-modal="true"
@@ -1502,7 +1689,6 @@ export default function WireframeWorkspace({
                   : 'Anything you’d like the first draft to focus on?'}
               </span>
               <textarea
-                autoFocus
                 rows={4}
                 value={aiInstruction}
                 onChange={(event) => setAiInstruction(event.target.value)}
@@ -1579,6 +1765,27 @@ function PropertyField({ label, children }: { label: string; children: React.Rea
     </label>
   );
 }
+function ContainerOptions({
+  nodes,
+  exclude,
+  path = '',
+}: {
+  nodes: WireNode[];
+  exclude: string;
+  path?: string;
+}) {
+  return nodes
+    .filter((node) => node.id !== exclude)
+    .map((node) => {
+      const label = path ? `${path} / ${node.name}` : node.name;
+      return (
+        <Fragment key={node.id}>
+          {CONTAINERS.includes(node.type) && <option value={node.id}>{label}</option>}
+          <ContainerOptions nodes={node.children} exclude={exclude} path={label} />
+        </Fragment>
+      );
+    });
+}
 function LayerList({
   nodes,
   selectedId,
@@ -1596,6 +1803,7 @@ function LayerList({
         <div key={node.id}>
           <button
             className={`wf-layer-item${selectedId === node.id ? ' active' : ''}`}
+            aria-pressed={selectedId === node.id}
             style={{ paddingLeft: 12 + level * 13 }}
             onClick={() => onSelect(node.id)}
           >

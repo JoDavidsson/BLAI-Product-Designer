@@ -10,7 +10,8 @@ const created = await client.post('/api/projects', {
 assert.equal(created.status(), 201, await created.text());
 const { project: initial } = await created.json();
 const browser = await chromium.launch({
-  executablePath: process.env.BLAI_CHROMIUM || '/usr/bin/chromium',
+  executablePath:
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || process.env.BLAI_CHROMIUM || '/usr/bin/chromium',
   headless: true,
   args: ['--no-sandbox'],
 });
@@ -150,6 +151,101 @@ try {
     'Element annotation stores normalized coordinates, draws dotted leader, and follows reordering',
   );
 
+  // Existing content can move into an empty container without losing comments.
+  await node(nested.id).locator('p').click();
+  await page.keyboard.press('Escape');
+  await page
+    .locator('.wf-component-button')
+    .filter({ hasText: /^Column$/ })
+    .click();
+  state = await save();
+  const emptyColumn = screen(state).nodes.at(-1);
+  assert.equal(emptyColumn.type, 'column');
+  assert.equal(emptyColumn.children.length, 0);
+  await node(nested.id).locator('p').click();
+  await page.getByLabel('Inside container', { exact: true }).selectOption(emptyColumn.id);
+  state = await save();
+  assert.equal(find(screen(state).nodes, emptyColumn.id).children[0].id, nested.id);
+  assert.equal(state.comments.find((item) => item.id === annotation.id).target.nodeId, nested.id);
+  await expect(node(nested.id).locator('.annotation-pin')).toBeVisible();
+  await page.getByRole('button', { name: 'Select parent container', exact: true }).click();
+  await page.getByLabel('Container layout', { exact: true }).selectOption('row');
+  state = await save();
+  assert.equal(find(screen(state).nodes, emptyColumn.id).type, 'row');
+  assert.equal(find(screen(state).nodes, emptyColumn.id).children[0].id, nested.id);
+  await node(nested.id).locator('p').click();
+  await page.getByLabel('Inside container', { exact: true }).selectOption(card.id);
+  state = await save();
+  assert.equal(find(screen(state).nodes, card.id).children.at(-1).id, nested.id);
+  await node(nested.id).locator('p').click();
+  await node(emptyColumn.id).scrollIntoViewIfNeeded();
+  const moveHandle = await node(nested.id)
+    .getByRole('button', { name: 'Drag Text', exact: true })
+    .boundingBox();
+  const emptyBounds = await node(emptyColumn.id).boundingBox();
+  assert(moveHandle && emptyBounds, 'Empty container and drag handle have bounds');
+  await page.mouse.move(moveHandle.x + moveHandle.width / 2, moveHandle.y + moveHandle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(moveHandle.x + 15, moveHandle.y + 15, { steps: 3 });
+  await page.mouse.move(
+    emptyBounds.x + emptyBounds.width / 2,
+    emptyBounds.y + emptyBounds.height / 2,
+    { steps: 15 },
+  );
+  await page.mouse.up();
+  state = await save();
+  assert.equal(find(screen(state).nodes, emptyColumn.id).children[0].id, nested.id);
+  await node(nested.id).locator('p').click();
+  await page.getByLabel('Inside container', { exact: true }).selectOption(card.id);
+  await save();
+  report.push(
+    'Container controls and pointer drops reparent annotated content into empty containers; row/column conversion preserves IDs',
+  );
+
+  // Canvas shortcuts reuse components across screens and leave text editing alone.
+  await node(nested.id).locator('p').click();
+  await page.keyboard.press('Control+c');
+  await expect(page.getByRole('button', { name: 'Paste component', exact: true })).toBeEnabled();
+  await page
+    .locator('.wf-sidebar-tabs')
+    .getByRole('button', { name: /^Screens/ })
+    .click();
+  await page.locator('.wf-screen-item').filter({ hasText: 'Today’s itinerary' }).click();
+  await page.getByLabel('Wireframe canvas', { exact: true }).focus();
+  await page.keyboard.press('Control+v');
+  state = await save();
+  const mobile = state.screens.find((item) => item.id === initial.screens[1].id);
+  const pasted = mobile.nodes.at(-1);
+  assert.equal(pasted.text, nested.text);
+  assert.notEqual(pasted.id, nested.id);
+  assert.equal(state.comments.filter((item) => item.target.nodeId === pasted.id).length, 0);
+  await node(pasted.id).locator('p').click();
+  await page.keyboard.press('Control+d');
+  state = await save();
+  const duplicate = state.screens.find((item) => item.id === mobile.id).nodes.at(-1);
+  assert.notEqual(duplicate.id, pasted.id);
+  assert.equal(duplicate.text, pasted.text);
+  await node(duplicate.id).locator('p').click();
+  await page.keyboard.press('Delete');
+  state = await save();
+  assert.equal(
+    find(state.screens.find((item) => item.id === mobile.id).nodes, duplicate.id),
+    undefined,
+  );
+  await node(pasted.id).locator('p').click();
+  await page.getByLabel('Content', { exact: true }).fill('Typing remains text');
+  await page.getByLabel('Content', { exact: true }).press('Backspace');
+  state = await save();
+  assert.equal(
+    find(state.screens.find((item) => item.id === mobile.id).nodes, pasted.id).text,
+    'Typing remains tex',
+  );
+  await page.locator('.wf-screen-item').filter({ hasText: 'Trip overview' }).click();
+  await node(nested.id).locator('p').click();
+  report.push(
+    'Canvas copy/paste works across screens; duplicate/delete shortcuts preserve normal textbox editing',
+  );
+
   // Duplicate/delete components, including annotation cleanup.
   await page.getByRole('button', { name: 'Duplicate', exact: true }).click();
   state = await save();
@@ -182,6 +278,31 @@ try {
   state = await save();
   assert(!state.screens.some((item) => item.id === variant.id));
   report.push('Error variant creates an explicit editable state and can be deleted');
+
+  // Clearing a name must not create an invalid autosave, and the AI dialog is keyboard-contained.
+  await page.getByLabel('Screen name', { exact: true }).fill('');
+  state = await save();
+  assert.equal(screen(state).name, initial.screens[0].name);
+  await expect(page.getByLabel('Screen name', { exact: true })).toHaveValue(
+    initial.screens[0].name,
+  );
+  await page.getByRole('button', { name: 'Design with AI', exact: true }).click();
+  const aiDialog = page.getByRole('dialog', { name: 'Let’s give your idea a shape.' });
+  await expect(aiDialog.locator('textarea')).toBeFocused();
+  for (let index = 0; index < 8; index++) {
+    await page.keyboard.press('Tab');
+    assert(
+      await aiDialog.evaluate((element) => element.contains(document.activeElement)),
+      'Tab focus remains within AI dialog',
+    );
+  }
+  await aiDialog.locator('textarea').focus();
+  await page.keyboard.press('Escape');
+  await expect(aiDialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Design with AI', exact: true })).toBeFocused();
+  report.push(
+    'Blank screen names restore the saved value; AI dialog traps Tab and Escape returns focus',
+  );
 
   // Reload proves saved content/structure survive a full application restart.
   await page.reload();

@@ -103,6 +103,7 @@ export default function BoardWorkspace({
   const [onlyCommented, setOnlyCommented] = useState(false);
   const [direction, setDirection] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [sourceDraft, setSourceDraft] = useState<{ assetId: string; value: string }>();
   const inputRef = useRef<HTMLInputElement>(null);
   const addDialogRef = useRef<HTMLDialogElement>(null);
   const viewerRef = useRef<HTMLDialogElement>(null);
@@ -113,6 +114,12 @@ export default function BoardWorkspace({
   const screenshots = mode === 'screenshot';
   const assets = project.assets.filter((asset) => asset.kind === mode);
   const selected = assets.find((asset) => asset.id === selectedId);
+  const sourceValue =
+    sourceDraft?.assetId === selected?.id ? sourceDraft?.value || '' : selected?.sourceUrl || '';
+  const sourceInvalid = Boolean(
+    sourceValue.trim() &&
+    (!safeLink(sourceValue.trim()) || !sourceValue.trim().toLowerCase().startsWith('https://')),
+  );
   const selectedIndex = assets.findIndex((asset) => asset.id === selectedId);
   const comments = project.comments.filter((comment) => comment.target.assetId === selected?.id);
   const visible = assets.filter(
@@ -162,6 +169,7 @@ export default function BoardWorkspace({
     setTarget(undefined);
     setAddingComment(false);
     setConfirmDelete(false);
+    setSourceDraft(undefined);
   }, [selectedId]);
   useEffect(() => {
     const onHashChange = () => {
@@ -304,10 +312,18 @@ export default function BoardWorkspace({
     }
   }
   function updateAsset(asset: BoardAsset, update: Partial<BoardAsset>) {
-    onChange({
-      ...project,
-      assets: project.assets.map((item) => (item.id === asset.id ? { ...item, ...update } : item)),
-    });
+    const latest = projectRef.current;
+    const next = {
+      ...latest,
+      assets: latest.assets.map((item) => (item.id === asset.id ? { ...item, ...update } : item)),
+    };
+    projectRef.current = next;
+    onChange(next);
+  }
+  function closeReference() {
+    if (selected && !selected.title.trim()) updateAsset(selected, { title: 'Untitled reference' });
+    if (sourceInvalid) onToast('The source URL was incomplete. Your previous source was kept.');
+    setSelectedId(undefined);
   }
   function handleDrop(event: DragEvent) {
     event.preventDefault();
@@ -620,6 +636,7 @@ export default function BoardWorkspace({
       <dialog
         ref={addDialogRef}
         className="board-add-dialog"
+        aria-label={screenshots ? 'Add a screenshot' : 'Add a reference'}
         onCancel={(event) => {
           if (busy) event.preventDefault();
           else setAddOpen(false);
@@ -736,7 +753,12 @@ export default function BoardWorkspace({
           Open any reference to add notes and pinned comments.
         </div>
       </dialog>
-      <dialog ref={viewerRef} className="board-viewer" onCancel={() => setSelectedId(undefined)}>
+      <dialog
+        ref={viewerRef}
+        className="board-viewer"
+        aria-label={selected ? `Reference: ${selected.title || 'Untitled reference'}` : 'Reference'}
+        onCancel={closeReference}
+      >
         {selected && (
           <>
             <div className="board-viewer-header">
@@ -773,7 +795,7 @@ export default function BoardWorkspace({
                   type="button"
                   className="board-icon-button"
                   aria-label="Close reference"
-                  onClick={() => setSelectedId(undefined)}
+                  onClick={closeReference}
                 >
                   <X size={19} />
                 </button>
@@ -849,11 +871,11 @@ export default function BoardWorkspace({
                       Reference title
                       <input
                         aria-label="Reference title"
-                        defaultValue={selected.title}
+                        value={selected.title}
                         maxLength={200}
+                        onChange={(event) => updateAsset(selected, { title: event.target.value })}
                         onBlur={(event) => {
-                          const title = event.target.value.trim() || selected.title;
-                          event.target.value = title;
+                          const title = event.target.value.trim() || 'Untitled reference';
                           if (title !== selected.title) updateAsset(selected, { title });
                         }}
                       />
@@ -891,13 +913,10 @@ export default function BoardWorkspace({
                     <textarea
                       aria-label="Reference note"
                       rows={2}
-                      defaultValue={selected.note}
+                      value={selected.note}
                       maxLength={10000}
                       placeholder="The generous spacing, the warm palette, the way the typography feels…"
-                      onBlur={(event) => {
-                        if (event.target.value !== selected.note)
-                          updateAsset(selected, { note: event.target.value });
-                      }}
+                      onChange={(event) => updateAsset(selected, { note: event.target.value })}
                     />
                   </label>
                   <div className="board-source-field">
@@ -906,24 +925,31 @@ export default function BoardWorkspace({
                       <input
                         aria-label="Reference source URL"
                         type="url"
-                        defaultValue={selected.sourceUrl}
+                        value={sourceValue}
+                        aria-invalid={sourceInvalid || undefined}
+                        aria-describedby={sourceInvalid ? 'board-source-error' : undefined}
                         placeholder="https://…"
                         maxLength={2000}
-                        onBlur={(event) => {
+                        onChange={(event) => {
                           const sourceUrl = event.target.value.trim();
                           if (
                             sourceUrl &&
                             (!safeLink(sourceUrl) ||
                               !sourceUrl.toLowerCase().startsWith('https://'))
                           ) {
-                            onToast('Use a full https:// source URL.');
-                            event.target.value = selected.sourceUrl;
+                            setSourceDraft({ assetId: selected.id, value: event.target.value });
                             return;
                           }
+                          setSourceDraft(undefined);
                           if (sourceUrl !== selected.sourceUrl)
                             updateAsset(selected, { sourceUrl });
                         }}
                       />
+                      {sourceInvalid && (
+                        <span id="board-source-error" role="status">
+                          Use a full https:// URL. Your previous source is kept until this is valid.
+                        </span>
+                      )}
                     </label>
                     {safeLink(selected.sourceUrl) && (
                       <a

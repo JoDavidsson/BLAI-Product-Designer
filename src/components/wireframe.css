@@ -508,6 +508,10 @@
   scrollbar-width: thin;
   scrollbar-color: #ded8e5 transparent;
 }
+.wf-canvas-scroll:focus-visible {
+  outline: 2px solid #8e7ce8;
+  outline-offset: -2px;
+}
 .wf-canvas-stage {
   padding: 45px 48px 32px;
   margin: 0 auto;
@@ -1203,6 +1207,9 @@
 }
 .wf-arrange-buttons > button:hover {
   background: #f8f4fb;
+}
+.wf-copy-component {
+  margin-bottom: 12px;
 }
 .wf-danger-text {
   color: #b98e9d !important;

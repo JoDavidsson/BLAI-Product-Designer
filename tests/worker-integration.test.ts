@@ -112,6 +112,31 @@ describe('Worker with real D1 and R2 bindings', () => {
     const foreign = await newProject(env, 'another-owner@example.com', 'Private');
     expect((await request(`/api/projects/${foreign.id}`)).status).toBe(404);
   });
+  it('bounds stored project bytes for multilingual content without changing the saved revision', async () => {
+    const p = await project();
+    const proposed: Project = {
+      ...p,
+      chat: Array.from({ length: 80 }, (_, index) => ({
+        id: `multilingual_${index}`,
+        role: 'user' as const,
+        text: '界'.repeat(7000),
+        createdAt: p.createdAt,
+      })),
+    };
+    // Fits both the old character check and the HTTP body limit, but exceeds
+    // the storage budget after UTF-8 encoding.
+    expect(JSON.stringify(proposed).length).toBeLessThan(1500000);
+    const response = await request(`/api/projects/${p.id}`, 'PUT', {
+      project: proposed,
+      expectedRevision: 1,
+    });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({ code: 'project_too_large' });
+    expect(await getProject(env, 'local@blai.test', p.id)).toEqual(p);
+    expect(await payload(await request(`/api/projects/${p.id}/versions`))).toEqual({
+      versions: [],
+    });
+  });
   it('downloads private helper settings only when configured and never exposes them in status', async () => {
     expect((await request('/api/helper/setup')).status).toBe(503);
     const response = await handleRequest(new Request('http://localhost/api/helper/setup'), {
@@ -390,6 +415,59 @@ describe('Worker with real D1 and R2 bindings', () => {
     await payload(await request(`/api/projects/${p.id}`, 'DELETE'));
     expect((await request(upload.asset.imageUrl)).status).toBe(404);
   });
+  it('saves full boards while rejecting even one image from another project', async () => {
+    const p = await project(),
+      other = await project();
+    // Populate ownership records directly; image serving is exercised above.
+    const assets: Project['assets'] = Array.from({ length: 100 }, (_, index) => ({
+      id: `full_board_${p.id}_${index}`,
+      title: `Reference ${index + 1}`,
+      kind: 'reference',
+      imageUrl: `/api/assets/full_board_${p.id}_${index}`,
+      sourceUrl: '',
+      note: '',
+      createdAt: p.createdAt,
+    }));
+    await env.DB.batch(
+      assets.map((asset) =>
+        env.DB.prepare(
+          'INSERT INTO assets(key,owner,project_id,mime,bytes,created_at) VALUES(?,?,?,?,?,?)',
+        ).bind(asset.id, 'local@blai.test', p.id, 'image/png', 1, p.createdAt),
+      ),
+    );
+    const foreign = {
+      ...assets[99],
+      id: `foreign_${p.id}`,
+      imageUrl: `/api/assets/foreign_${p.id}`,
+    };
+    await env.DB.prepare(
+      'INSERT INTO assets(key,owner,project_id,mime,bytes,created_at) VALUES(?,?,?,?,?,?)',
+    )
+      .bind(foreign.id, 'local@blai.test', other.id, 'image/png', 1, p.createdAt)
+      .run();
+    const rejected = await request(`/api/projects/${p.id}`, 'PUT', {
+      project: { ...p, assets: [...assets.slice(0, 99), foreign] },
+      expectedRevision: 1,
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ code: 'asset_not_owned' });
+    const saved = await payload<{ project: Project }>(
+      await request(`/api/projects/${p.id}`, 'PUT', {
+        project: { ...p, assets },
+        expectedRevision: 1,
+      }),
+    );
+    expect(saved.project.assets).toEqual(assets);
+    // Separate board cards may intentionally reuse one owned image.
+    const reused = {
+      ...saved.project,
+      assets: assets.map((asset) => ({ ...asset, imageUrl: assets[0].imageUrl })),
+    };
+    expect(
+      (await request(`/api/projects/${p.id}`, 'PUT', { project: reused, expectedRevision: 2 }))
+        .status,
+    ).toBe(200);
+  });
   it('expires a lost lease and prevents a late result from publishing', async () => {
     const p = await project(),
       workerId = 'helper_timeout';
@@ -460,6 +538,14 @@ describe('Worker with real D1 and R2 bindings', () => {
     const wrong = structuredClone(p.screens[0]);
     wrong.nodes[0].action = { screenId: 'missing_screen' };
     expect((await complete([wrong])).status).toBe(400);
+    const collision = structuredClone(p.screens[0]);
+    collision.nodes[0].id = p.screens[1].nodes[0].id;
+    const rejected = await complete([collision]);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ code: 'invalid_result' });
+    expect(await payload(await request(`/api/projects/${p.id}/proposals`))).toEqual({
+      proposals: [],
+    });
     const refined = { ...p.screens[0], description: 'Improved through the helper' };
     await payload(await complete([refined]));
     const proposals = await payload<{ proposals: { id: string }[] }>(

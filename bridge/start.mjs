@@ -34,7 +34,7 @@ export async function startHelper(configPath = path.join(root, '.blai-designer',
   try {
     while (!controller.signal.aborted) {
       try {
-        const job = await client.claim();
+        const job = await client.claim({ signal: controller.signal });
         if (disconnected) console.log('Designer connection restored.');
         disconnected = false;
         if (!job) {

@@ -8,12 +8,12 @@ Also see the [wireframe editor](docs/screenshots/wireframes.png) and [handoff wo
 
 ## First pass
 
-- **Product planning:** an editable, structured specification beside a Codex conversation. AI changes arrive as proposals that you review before applying.
-- **Wireframes:** nested rows, columns, cards, text, buttons, and other components; drag ordering, property editing, desktop/mobile screens, explicit state variants, and clickable navigation.
+- **Product planning:** an editable, structured specification beside a Codex conversation. AI changes arrive as proposals with current/proposed plan text, inspectable screen structure, and visible color/type/radius changes before applying.
+- **Wireframes:** nested rows, columns, cards, text, buttons, and other components; drag ordering, cross-screen copy/paste, keyboard editing, parent/layout controls, desktop/mobile screens, explicit state variants, and clickable navigation.
 - **Moodboard and build review:** image uploads, HTTPS image/webpage references, source notes, and screenshot review.
 - **Annotations:** normalized pins with dotted connectors, threaded replies, resolve/reopen, and conversion to accepted requirements. Notes from removed targets remain in project discussion with their previous location.
-- **Handoff:** ZIP with Markdown, structured project data, screen SVGs, assets, checksums, accepted requirements, and unresolved questions. Optional atomic GitHub export preserves unrelated repository files.
-- **Persistence:** private projects in D1, images in R2, automatic revisions, named checkpoints, and conflict detection.
+- **Handoff:** ZIP with a `CODEX.md` implementation entrypoint, Markdown, structured project data, screen SVGs, assets, checksums, accepted requirements, and unresolved questions. Optional atomic GitHub export preserves unrelated repository files.
+- **Persistence:** private projects in D1, images in R2, automatic revisions, session undo/redo, named checkpoints, and conflict recovery with downloadable local drafts.
 - **Codex subscription:** a dedicated Linux helper uses an existing ChatGPT Codex login and outbound polling. The writing tool's service and configuration remain separate.
 
 The included **Wayfinder** project is a clearly labeled, editable example. AI is never simulated in the application: an offline helper produces an explicit connection state, not fabricated output.
@@ -59,9 +59,17 @@ With the development server running:
 PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium npm run test:e2e
 ```
 
-The browser tests create and remove their own projects. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real drag operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, and delayed-upload regressions. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
+The four browser workflows create and remove their own projects. The same workflows are configured in GitHub Actions alongside unit/helper tests, formatting, and the production build. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real drag operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, delayed-upload regressions, in-flight undo, revision conflicts, proposal diffs, and stale checkpoint responses. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
 
 Unit and integration tests include real local D1/R2, owner isolation, Access authentication, concurrency, helper leases/cancellation, stale AI proposals, imported URL validation, and GitHub API fixtures. Fixtures validate the protocol; they do not establish a live Codex subscription connection or a real GitHub write.
+
+## Editing shortcuts
+
+Use the toolbar to undo/redo changes across the workspace. Outside text fields, `Ctrl/⌘ Z` undoes and `Ctrl/⌘ Shift Z` redoes. Text fields retain their native editing shortcuts. Session history holds up to 50 edits subject to a memory budget, resets when switching projects or reloading, and does not replace named checkpoints.
+
+When the wireframe canvas or layers have focus, `Ctrl/⌘ C` copies a component, `Ctrl/⌘ V` pastes it into the selected container (including across screens), and `Ctrl/⌘ D` duplicates it. Delete/Backspace removes the selected component. The inspector's parent and layout controls move and reshape components while keeping pinned comments attached.
+
+When another tab saves a newer revision, your edits remain visible. Download the unsaved copy before choosing **Reload saved version** if you want to keep both versions. A pending upload is not added during a project replacement; the board reports that it was not attached so it can be uploaded again.
 
 ## Deploy to Cloudflare
 

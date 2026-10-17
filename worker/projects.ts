@@ -11,6 +11,19 @@ import { createSampleProject } from '../shared/seed';
 import { projectSchema } from '../shared/validation';
 import { AppError, type Env } from './types';
 
+export function assertProjectSize(project: Project): string {
+  const encoded = JSON.stringify(project);
+  // D1 limits stored values in bytes. Non-ASCII plans and comments can take
+  // several bytes per character, especially after merging an AI proposal.
+  if (new TextEncoder().encode(encoded).byteLength > 1500000)
+    throw new AppError(
+      413,
+      'project_too_large',
+      'This project is too large. Split it into smaller projects.',
+    );
+  return encoded;
+}
+
 export async function getProject(env: Env, owner: string, id: string): Promise<Project> {
   const row = await env.DB.prepare('SELECT data FROM projects WHERE id = ? AND owner = ?')
     .bind(id, owner)
@@ -68,28 +81,30 @@ export async function saveProject(
     updatedAt: new Date().toISOString(),
     revision: expectedRevision + 1,
   });
-  // An asset URL is an opaque reference, but still cannot attach someone else's uploaded asset.
-  for (const a of p.assets)
-    if (a.imageUrl.startsWith('/api/assets/')) {
-      const asset = await env.DB.prepare(
-        'SELECT key FROM assets WHERE key=? AND owner=? AND project_id=?',
-      )
-        .bind(a.imageUrl.slice('/api/assets/'.length), owner, p.id)
-        .first();
-      if (!asset)
-        throw new AppError(
-          400,
-          'asset_not_owned',
-          'An image does not belong to this project. Upload it here first.',
-        );
-    }
-  const encoded = JSON.stringify(p);
-  if (encoded.length > 1500000)
-    throw new AppError(
-      413,
-      'project_too_large',
-      'This project is too large. Split it into smaller projects.',
-    );
+  // Check the full board in one query: sequential lookups become expensive on
+  // autosave and can exceed D1's per-request query budget. A JSON parameter also
+  // keeps a full 100-image board below SQLite's bound-parameter limit.
+  const assetKeys = [
+    ...new Set(
+      p.assets
+        .filter((asset) => asset.imageUrl.startsWith('/api/assets/'))
+        .map((asset) => asset.imageUrl.slice('/api/assets/'.length)),
+    ),
+  ];
+  if (assetKeys.length) {
+    const owned = await env.DB.prepare(
+      'SELECT key FROM assets WHERE owner=? AND project_id=? AND key IN (SELECT value FROM json_each(?))',
+    )
+      .bind(owner, p.id, JSON.stringify(assetKeys))
+      .all<{ key: string }>();
+    if (owned.results.length !== assetKeys.length)
+      throw new AppError(
+        400,
+        'asset_not_owned',
+        'An image does not belong to this project. Upload it here first.',
+      );
+  }
+  const encoded = assertProjectSize(p);
   const predicate = proposalId
     ? " AND EXISTS(SELECT 1 FROM proposals WHERE id=? AND project_id=projects.id AND owner=projects.owner AND status='pending' AND base_revision=?)"
     : '';
@@ -200,7 +215,7 @@ export async function deleteProject(env: Env, owner: string, projectId: string):
 }
 export function proposalToProject(
   project: Project,
-  proposal: AIProposal,
+  proposal: Pick<AIProposal, 'kind' | 'result'>,
   _instruction: string,
   screenId?: string,
 ): Project {

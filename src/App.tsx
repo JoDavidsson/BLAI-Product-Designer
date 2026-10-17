@@ -20,6 +20,8 @@ import {
   Monitor,
   MoreHorizontal,
   Plus,
+  Redo2,
+  Undo2,
   Send,
   Settings2,
   ShieldCheck,
@@ -44,6 +46,7 @@ import { useProject } from './lib/use-project';
 import WireframeWorkspace from './components/WireframeWorkspace';
 import BoardWorkspace from './components/BoardWorkspace';
 import AnnotationPanel from './components/AnnotationPanel';
+import ProposalChanges from './components/ProposalChanges';
 
 type View = 'plan' | 'wireframes' | 'moodboard' | 'review' | 'handoff' | 'settings';
 const navigation = [
@@ -70,7 +73,19 @@ const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : 'Something went wrong. Please try again.';
 
 export default function App() {
-  const { project, change, replace, flush, saveState, saveError, current } = useProject();
+  const {
+    project,
+    change,
+    replace,
+    flush,
+    saveState,
+    saveError,
+    current,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+  } = useProject();
   const [view, setView] = useState<View>('plan');
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [session, setSession] = useState<{
@@ -85,6 +100,7 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [modal, setModal] = useState<'new' | 'proposals' | 'versions' | 'github' | null>(null);
   const [projectName, setProjectName] = useState('');
+  const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
   const transitionLock = useRef(false);
@@ -169,27 +185,84 @@ export default function App() {
   }, [project?.id, notify]);
   useEffect(() => {
     if (!modal) return;
-    const close = (event: KeyboardEvent) => {
+    const handleKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) setModal(null);
+      if (event.key !== 'Tab') return;
+      const dialog = document.querySelector<HTMLElement>('.modal[role="dialog"]');
+      if (!dialog) return;
+      const focusable = [
+        ...dialog.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]',
+        ),
+      ].filter((element) => element.getClientRects().length);
+      const first = focusable[0],
+        last = focusable.at(-1);
+      if (!first) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        last?.focus();
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !dialog.contains(document.activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    document.addEventListener('keydown', close);
-    return () => document.removeEventListener('keydown', close);
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
   }, [modal, busy]);
   useEffect(() => {
     if (!modal) return;
     const previousFocus = document.activeElement as HTMLElement | null;
-    const frame = requestAnimationFrame(() =>
-      document
-        .querySelector<HTMLElement>(
-          '[role="dialog"] [autofocus], [role="dialog"] button:not(:disabled)',
-        )
-        ?.focus(),
-    );
+    const frame = requestAnimationFrame(() => {
+      const dialog = document.querySelector<HTMLElement>('.modal[role="dialog"]');
+      (
+        dialog?.querySelector<HTMLElement>('input:not(:disabled), textarea:not(:disabled)') ||
+        dialog?.querySelector<HTMLElement>('button:not(:disabled)') ||
+        dialog
+      )?.focus();
+    });
     return () => {
       cancelAnimationFrame(frame);
       previousFocus?.focus();
     };
   }, [modal]);
+  useEffect(() => {
+    const handleHistory = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        modal ||
+        busy ||
+        transitioning ||
+        document.querySelector('dialog[open]')
+      )
+        return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.closest('input, textarea, select') || target.isContentEditable)
+      )
+        return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === 'z' || (key === 'y' && !event.shiftKey)) {
+        event.preventDefault();
+        if (key === 'y' || event.shiftKey) redo();
+        else undo();
+      }
+    };
+    window.addEventListener('keydown', handleHistory);
+    return () => window.removeEventListener('keydown', handleHistory);
+  }, [modal, busy, transitioning, undo, redo]);
   useEffect(() => {
     const navigateToRequirement = () => {
       if (!location.hash.startsWith('#requirement-')) return;
@@ -235,11 +308,16 @@ export default function App() {
   );
   async function createProject(event: React.FormEvent) {
     event.preventDefault();
+    if (transitionLock.current) return;
+    transitionLock.current = true;
+    setTransitioning(true);
     setBusy(true);
     try {
       await flush();
       const result = await api.create(projectName.trim() || 'Untitled product');
       replace(result.project);
+      setJobs([]);
+      setProposals([]);
       await refreshProjects();
       setProjectName('');
       setView('plan');
@@ -248,6 +326,8 @@ export default function App() {
     } catch (error) {
       notify(errorMessage(error));
     } finally {
+      transitionLock.current = false;
+      setTransitioning(false);
       setBusy(false);
     }
   }
@@ -257,9 +337,13 @@ export default function App() {
         'Connect your Codex helper to use AI. Your plans and designs can still be edited and saved.',
       );
       setView('settings');
-      return;
+      return false;
     }
-    if (!current.current) return;
+    if (!current.current) return false;
+    if (current.current.chat.length >= 199) {
+      notify('This conversation is full. Start a new project to continue with Codex.');
+      return false;
+    }
     try {
       const active = current.current;
       change({
@@ -275,18 +359,21 @@ export default function App() {
         ],
       });
       const saved = await flush();
-      if (!saved) return;
+      if (!saved) return false;
       const result = await api.generate(saved.id, kind, instruction, screenId);
-      setJobs((previous) => [result.job, ...previous]);
+      if (current.current?.id === saved.id) setJobs((previous) => [result.job, ...previous]);
       notify('Sent to Codex. You can keep exploring while it works.');
+      return true;
     } catch (error) {
       notify(errorMessage(error));
+      return false;
     }
   }
   async function openVersions() {
-    if (!project) return;
+    if (!project || transitionLock.current) return;
     try {
       const result = await api.versions(project.id);
+      if (current.current?.id !== project.id || transitionLock.current) return;
       setVersions(result.versions);
       setModal('versions');
     } catch (error) {
@@ -317,28 +404,36 @@ export default function App() {
       )
     )
       return;
+    if (transitionLock.current) return;
+    transitionLock.current = true;
+    setTransitioning(true);
     setBusy(true);
     try {
       const saved = await flush();
       if (!saved) return;
       const result = await api.restore(saved, version.id);
-      replace(result.project);
+      replace(result.project, { record: true });
       await refreshProjects();
       setModal(null);
-      notify('Project restored.');
+      notify('Project restored. You can undo this change.');
     } catch (error) {
       notify(errorMessage(error));
     } finally {
+      transitionLock.current = false;
+      setTransitioning(false);
       setBusy(false);
     }
   }
   async function applyProposal(proposal: AIProposal) {
+    if (transitionLock.current) return;
+    transitionLock.current = true;
+    setTransitioning(true);
     setBusy(true);
     try {
       const saved = await flush();
       if (!saved) return;
       const result = await api.apply(saved, proposal.id);
-      replace(result.project);
+      replace(result.project, { record: true });
       setProposals((previous) =>
         previous.map((item) => (item.id === proposal.id ? { ...item, status: 'applied' } : item)),
       );
@@ -347,6 +442,8 @@ export default function App() {
     } catch (error) {
       notify(errorMessage(error));
     } finally {
+      transitionLock.current = false;
+      setTransitioning(false);
       setBusy(false);
     }
   }
@@ -525,6 +622,26 @@ export default function App() {
             <span>{activeNav?.label || 'Connections'}</span>
           </div>
           <div className="topbar-actions">
+            <div className="history-actions" role="group" aria-label="Edit history">
+              <button
+                className="icon-button"
+                aria-label="Undo last edit"
+                title="Undo (Ctrl/⌘ Z outside text fields)"
+                disabled={!canUndo || busy}
+                onClick={undo}
+              >
+                <Undo2 size={16} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Redo last edit"
+                title="Redo (Ctrl/⌘ Shift Z outside text fields)"
+                disabled={!canRedo || busy}
+                onClick={redo}
+              >
+                <Redo2 size={16} />
+              </button>
+            </div>
             <button
               className={`save-indicator ${saveState === 'error' ? 'error' : ''}`}
               onClick={() => void flush().catch((error) => notify(errorMessage(error)))}
@@ -583,14 +700,42 @@ export default function App() {
             >
               Download unsaved copy
             </button>
+            <button
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    'Reload the saved version? Unsaved edits in this tab will be discarded. Download your unsaved copy first if you want to keep them.',
+                  )
+                )
+                  return;
+                transitionLock.current = true;
+                setTransitioning(true);
+                try {
+                  const result = await api.get(project.id);
+                  replace(result.project);
+                } catch (error) {
+                  notify(errorMessage(error));
+                } finally {
+                  transitionLock.current = false;
+                  setTransitioning(false);
+                }
+              }}
+            >
+              Reload saved version
+            </button>
           </div>
         )}
         <main className={`main-content view-${view}`}>
           {view === 'plan' && (
             <Planner
+              key={project.id}
               project={project}
               onChange={change}
               onGenerate={generate}
+              prompt={chatDrafts[project.id] || ''}
+              onPromptChange={(value) =>
+                setChatDrafts((drafts) => ({ ...drafts, [project.id]: value }))
+              }
               helper={helper}
               activeJobs={activeJobs}
               completion={completion}
@@ -612,6 +757,7 @@ export default function App() {
           )}
           {view === 'wireframes' && (
             <WireframeWorkspace
+              key={project.id}
               project={project}
               onChange={change}
               onToast={notify}
@@ -621,6 +767,7 @@ export default function App() {
           )}
           {view === 'moodboard' && (
             <BoardWorkspace
+              key={project.id}
               project={project}
               onChange={change}
               onToast={notify}
@@ -632,6 +779,7 @@ export default function App() {
           )}
           {view === 'review' && (
             <BoardWorkspace
+              key={project.id}
               project={project}
               onChange={change}
               onToast={notify}
@@ -643,6 +791,7 @@ export default function App() {
           )}
           {view === 'handoff' && (
             <Handoff
+              key={project.id}
               project={project}
               onChange={change}
               completion={completion}
@@ -685,6 +834,7 @@ export default function App() {
           <section
             className={`modal ${modal === 'proposals' ? 'proposal-modal' : ''}`}
             role="dialog"
+            tabIndex={-1}
             aria-modal="true"
             aria-label={
               modal === 'new'
@@ -875,32 +1025,7 @@ export default function App() {
                         {proposal.result.reply && (
                           <div className="proposal-reply">{proposal.result.reply}</div>
                         )}
-                        {proposal.result.plan &&
-                          Object.entries(proposal.result.plan).map(([key, value]) => (
-                            <div className="proposed-field" key={key}>
-                              <strong>
-                                {PLAN_FIELDS.find(([field]) => field === key)?.[1] || key}
-                              </strong>
-                              <p>{value}</p>
-                            </div>
-                          ))}
-                        {proposal.result.screens?.map((screen) => (
-                          <div className="proposed-screen" key={screen.id}>
-                            <Monitor size={17} />
-                            <div>
-                              <strong>{screen.name}</strong>
-                              <small>
-                                {screen.platform} · {screen.description}
-                              </small>
-                            </div>
-                          </div>
-                        ))}
-                        {proposal.result.requirements.map((requirement, index) => (
-                          <div className="proposed-requirement" key={index}>
-                            <Check size={14} />
-                            {requirement.text}
-                          </div>
-                        ))}
+                        <ProposalChanges project={project} proposal={proposal} />
                         {proposal.baseRevision !== project.revision && (
                           <div className="info-box warning">
                             Your project changed after this proposal was requested. Dismiss it and
@@ -926,7 +1051,11 @@ export default function App() {
                           </button>
                           <button
                             className="btn primary"
-                            disabled={busy || proposal.baseRevision !== project.revision}
+                            disabled={
+                              busy ||
+                              saveState !== 'saved' ||
+                              proposal.baseRevision !== project.revision
+                            }
                             onClick={() => void applyProposal(proposal)}
                           >
                             <CheckCheck size={16} /> Apply changes
@@ -972,10 +1101,14 @@ function Planner({
   onCancel,
   onReview,
   pending,
+  prompt,
+  onPromptChange,
 }: {
   project: Project;
   onChange: (p: Project) => void;
-  onGenerate: (kind: JobKind, instruction: string) => void;
+  onGenerate: (kind: JobKind, instruction: string) => Promise<boolean>;
+  prompt: string;
+  onPromptChange: (value: string) => void;
   helper: HelperStatus;
   activeJobs: AIJob[];
   completion: number;
@@ -983,7 +1116,11 @@ function Planner({
   onReview: () => void;
   pending: number;
 }) {
-  const [prompt, setPrompt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(project.title);
+  useEffect(() => setDraftTitle(project.title), [project.title]);
+  const latestPrompt = useRef(prompt);
+  latestPrompt.current = prompt;
   const suggestions = [
     'Find the gaps in my plan',
     'Sharpen the user journeys',
@@ -1046,9 +1183,13 @@ function Planner({
           <input
             className="document-title"
             aria-label="Project title"
-            value={project.title}
+            value={draftTitle}
             maxLength={120}
-            onChange={(event) => onChange({ ...project, title: event.target.value })}
+            onChange={(event) => {
+              setDraftTitle(event.target.value);
+              if (event.target.value.trim()) onChange({ ...project, title: event.target.value });
+            }}
+            onBlur={() => setDraftTitle(project.title)}
           />
           <textarea
             className="document-summary"
@@ -1056,6 +1197,7 @@ function Planner({
             placeholder="The idea, in a sentence or two."
             value={project.summary}
             rows={2}
+            maxLength={4000}
             onChange={(event) => onChange({ ...project, summary: event.target.value })}
           />
           <div className="document-meta">
@@ -1099,6 +1241,7 @@ function Planner({
               </div>
               <textarea
                 aria-label={label}
+                maxLength={24000}
                 value={project.plan[key]}
                 placeholder={placeholder}
                 rows={Math.min(8, Math.max(3, Math.ceil(project.plan[key].length / 105)))}
@@ -1159,7 +1302,7 @@ function Planner({
               </p>
               <div className="chat-suggestions">
                 {suggestions.map((suggestion) => (
-                  <button key={suggestion} onClick={() => setPrompt(suggestion)}>
+                  <button key={suggestion} onClick={() => onPromptChange(suggestion)}>
                     {suggestion}
                     <ArrowUpRight size={13} />
                   </button>
@@ -1204,16 +1347,23 @@ function Planner({
         </div>
         <form
           className="chat-composer"
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
-            if (!prompt.trim()) return;
-            onGenerate('plan.assist', prompt.trim());
-            if (helper.online) setPrompt('');
+            if (!prompt.trim() || submitting) return;
+            const sent = prompt;
+            setSubmitting(true);
+            try {
+              if (await onGenerate('plan.assist', sent.trim())) {
+                if (latestPrompt.current === sent) onPromptChange('');
+              }
+            } finally {
+              setSubmitting(false);
+            }
           }}
         >
           <textarea
             value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
+            onChange={(event) => onPromptChange(event.target.value)}
             aria-label="Message Codex"
             placeholder="A thought, a question, a what if…"
             rows={3}
@@ -1224,7 +1374,7 @@ function Planner({
               <span className={`status-dot ${helper.online ? 'connected' : ''}`} />
               {helper.online ? 'Codex is ready' : 'Connect helper to begin'}
             </span>
-            <button aria-label="Send to Codex" disabled={!prompt.trim()}>
+            <button aria-label="Send to Codex" disabled={!prompt.trim() || submitting}>
               <ArrowRight size={17} />
             </button>
           </div>
@@ -1387,12 +1537,12 @@ function Handoff({
               ))
             )}
           </section>
-          {project.comments.some((comment) => comment.target.kind === 'project') && (
+          {
             <section className="handoff-annotations">
               <div className="section-label">PROJECT DISCUSSION</div>
               <AnnotationPanel project={project} onChange={onChange} onToast={onToast} />
             </section>
-          )}
+          }
         </div>
         <aside className="export-card">
           <div className="export-card-top">

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { outputSchema, validateJob, validateResult } from './schema.mjs';
@@ -38,11 +39,22 @@ missing acceptance criteria, data/permission rules, loading/empty/error/success 
 accessibility, responsive behavior, and unresolved questions. Keep screens null for both.
 For wireframe.generate create one coherent, styled, editable draft from the plan,
 accepted requirements, existing discussion, platform, and written visual direction.
+Read the whole plan, especially journeys, scope, data rules and acceptance criteria,
+before choosing screens. Cover each in-scope user journey and its essential states.
+Accepted requirements are commitments. Proposed requirements and open comments are
+unresolved suggestions: flag contradictions in reply rather than silently overriding
+accepted decisions. Resolved discussion is history, not a new instruction. When a
+comment has previousLocation, its original target no longer exists; do not invent it.
+Preserve existing screen and component IDs for concepts you keep, so anchored comments
+remain attached. A generated draft replaces the full screen set: include every screen
+that should remain, and link only to screens in that returned set. For platform both,
+include desktop and mobile layouts for the primary journey; for web use desktop and
+for mobile use mobile. Reuse the existing design tokens unless asked to change them.
 Use only supported structured components, realistic concise content, and safe hex colors.
 For wireframe.refine return exactly the requested screen with its existing screen ID;
 preserve IDs and manual content wherever possible. Never return unaffected screens.
 Use globally unique IDs with letters, numbers, hyphens and underscores. Screen links
-must point to existing screens or screens in the draft. Use at most 12 screens,
+in a refinement may target any existing screen. Use at most 12 screens,
 600 total components, and 10 nested component levels. Parent containers encode layout.
 For moodboard.direction keep screens null and write a concrete visual direction in reply;
 you may propose design tokens. You cannot see the contents of image URLs: ground advice
@@ -138,6 +150,7 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
     });
+    const decoder = new StringDecoder('utf8');
     let buffer = '',
       final = '',
       failure = '',
@@ -212,7 +225,7 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
         kill();
         return;
       }
-      buffer += chunk.toString();
+      buffer += decoder.write(chunk);
       let end;
       while ((end = buffer.indexOf('\n')) >= 0) {
         consume(buffer.slice(0, end));
@@ -225,6 +238,7 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
       if (kind !== 'unavailable') failure = kind;
     });
     child.on('close', (code) => {
+      buffer += decoder.end();
       if (buffer.trim()) consume(buffer);
       if (signal?.aborted) return finish(new Error('cancelled'));
       if (timedOut) return finish(new Error('timeout'));

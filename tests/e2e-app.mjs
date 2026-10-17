@@ -41,6 +41,7 @@ try {
   const b = await create('App test B');
   await context.addInitScript((id) => localStorage.setItem('blai-project', id), a.id);
   const page = await context.newPage();
+  page.setDefaultTimeout(10000);
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(base);
   await page.getByLabel('Project title', { exact: true }).waitFor();
@@ -48,6 +49,33 @@ try {
     'Edited in the browser: keep product decisions connected and preserve every saved change.';
   await page.getByLabel('Problem & opportunity', { exact: true }).fill(problem);
   await until(async () => (await get(a.id)).plan.problem === problem, 'plan autosave');
+  await page.getByRole('button', { name: 'Undo last edit', exact: true }).click();
+  await until(async () => (await get(a.id)).plan.problem === a.plan.problem, 'undo saved edit');
+  await page.getByRole('button', { name: 'Redo last edit', exact: true }).click();
+  await until(async () => (await get(a.id)).plan.problem === problem, 'redo saved edit');
+  await page.keyboard.press('Control+z');
+  await until(
+    async () => (await get(a.id)).plan.problem === a.plan.problem,
+    'keyboard undo outside text',
+  );
+  await page.keyboard.press('Control+Shift+z');
+  await until(async () => (await get(a.id)).plan.problem === problem, 'keyboard redo outside text');
+  assert.equal(
+    await page.getByLabel('Project summary', { exact: true }).getAttribute('maxlength'),
+    '4000',
+  );
+  assert.equal(
+    await page.getByLabel('Problem & opportunity', { exact: true }).getAttribute('maxlength'),
+    '24000',
+  );
+  await page.getByLabel('Project title', { exact: true }).fill('');
+  await page.getByLabel('Project summary', { exact: true }).focus();
+  assert.equal(
+    await page.getByLabel('Project title', { exact: true }).inputValue(),
+    a.title,
+    'blank title restores last valid title',
+  );
+  assert.equal(await page.locator('.save-error').count(), 0);
 
   let releaseLoad;
   let enteredLoad;
@@ -76,6 +104,11 @@ try {
     'new project loaded',
   );
   assert.equal((await get(a.id)).plan.problem, problem);
+  assert.equal(
+    await page.getByRole('button', { name: 'Undo last edit', exact: true }).isDisabled(),
+    true,
+    'history must not cross projects',
+  );
   await page.unroute(`**/api/projects/${b.id}`);
 
   await page.getByRole('button', { name: 'Project checkpoints', exact: true }).click();
@@ -131,6 +164,20 @@ try {
   await page.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.getByRole('button', { name: 'New project', exact: true }).click();
+  await page.getByRole('button', { name: 'Close dialog' }).focus();
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.textContent?.trim()),
+    'Create project',
+    'modal wraps backward keyboard focus',
+  );
+  await page.keyboard.press('Tab');
+  assert.equal(
+    await page.evaluate(() => document.activeElement?.getAttribute('aria-label')),
+    'Close dialog',
+    'modal wraps forward keyboard focus',
+  );
+
   await page.getByLabel('Project name', { exact: true }).fill('Browser-created project');
   await page.getByRole('button', { name: 'Create project', exact: true }).click();
   await until(
@@ -147,6 +194,11 @@ try {
   await page.getByRole('heading', { name: 'Codex Helper', exact: true }).waitFor();
   assert.equal((await get(newId)).chat.length, 0, 'offline helper must not fabricate a reply');
   await page.getByRole('button', { name: 'Product plan', exact: true }).click();
+  assert.equal(
+    await page.getByLabel('Message Codex', { exact: true }).inputValue(),
+    'Help me define the audience.',
+    'offline connection navigation preserves the chat draft',
+  );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(
     await page.evaluate(() => document.body.scrollWidth <= innerWidth + 1),

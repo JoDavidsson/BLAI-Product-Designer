@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import { mkdtemp, readdir, rm, readFile, writeFile, stat, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -144,7 +145,95 @@ test('job envelope rejects unsupported actions and excessive context', () => {
     () => validateJob(job({ context: { id: 'other', screens: [], plan: {} } })),
     /protocol/,
   );
+  assert.throws(
+    () => validateJob(job({ context: { id: 'project_1', screens: [], plan: null } })),
+    /protocol/,
+  );
 });
+
+test('refinement and generation cannot reuse identifiers that survive in the project', () => {
+  const request = job({
+    kind: 'wireframe.refine',
+    screenId: 'screen_1',
+    context: {
+      id: 'project_1',
+      plan: {},
+      screens: [screen(), { ...screen([node('node_other')]), id: 'screen_other' }],
+      assets: [{ id: 'asset_1' }],
+    },
+  });
+  for (const id of ['screen_other', 'node_other', 'asset_1'])
+    assert.throws(
+      () => validateResult({ ...result(), screens: [screen([node(id)])] }, request),
+      /invalid/,
+    );
+  assert.equal(validateResult({ ...result(), screens: [screen()] }, request).screens.length, 1);
+  assert.throws(
+    () =>
+      validateResult(
+        { ...result(), screens: [{ ...screen(), id: 'asset_1' }] },
+        { ...request, kind: 'wireframe.generate' },
+      ),
+    /invalid/,
+  );
+});
+
+test('streamed Unicode product text survives UTF-8 boundaries in CLI output', async () =>
+  temporary(async (dir) => {
+    const expected = { ...result(), reply: 'Räksmörgås — 東京 🧭' };
+    const output = await runCodex(job(), {
+      workDir: dir,
+      spawnProcess: spawnFixture([], {
+        hang: true,
+        onSpawn(_command, _args, _options, child) {
+          setImmediate(() => {
+            const bytes = Buffer.from(
+              JSON.stringify({
+                type: 'item.completed',
+                item: { type: 'agent_message', text: JSON.stringify(expected) },
+              }) + '\n',
+            );
+            for (const byte of bytes) child.stdout.write(Buffer.from([byte]));
+            child.emit('close', 0);
+          });
+        },
+      }),
+    });
+    assert.equal(output.reply, expected.reply);
+  }));
+
+test('real subprocess cancellation escalates when the process ignores SIGTERM', async () =>
+  temporary(async (dir) => {
+    const controller = new AbortController();
+    let exitSignal;
+    await assert.rejects(
+      runCodex(job(), {
+        workDir: dir,
+        signal: controller.signal,
+        spawnProcess(_command, _args, options) {
+          const child = spawn(
+            process.execPath,
+            [
+              '-e',
+              `process.on('SIGTERM', () => {});
+              process.stdin.resume();
+              setInterval(() => {}, 1000);
+              process.stdout.write(JSON.stringify({type: 'thread.started'}) + '\\n');`,
+            ],
+            options,
+          );
+          child.stdout.once('data', () => controller.abort());
+          child.on('exit', (_code, signal) => {
+            exitSignal = signal;
+          });
+          return child;
+        },
+      }),
+      /cancelled/,
+    );
+    assert.equal(exitSignal, 'SIGKILL');
+    assert.deepEqual(await readdir(dir), []);
+  }));
 
 test('runner disables executable tools, protects credentials, returns data and removes temporary artifacts', async () =>
   temporary(async (dir) => {
@@ -279,6 +368,117 @@ test('client rejects mismatched versions and HTML login responses', async () => 
       new Response('<html>Sign in</html>', { headers: { 'content-type': 'text/html' } }),
   });
   await assert.rejects(login.claim(), /protocol/);
+});
+
+test('client interrupts in-flight requests when the helper shuts down', async () => {
+  const controller = new AbortController();
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const client = createClient(config(), {
+    fetcher: (_url, { signal }) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        started();
+      }),
+  });
+  const pending = client.claim({ signal: controller.signal });
+  await ready;
+  controller.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('shutdown during final ownership check or completion retry cannot publish again', async () => {
+  for (const phase of ['heartbeat', 'retry', 'before-run']) {
+    const controller = new AbortController();
+    let attempts = 0;
+    let runs = 0;
+    if (phase === 'before-run') controller.abort();
+    const client = {
+      heartbeat: async () => {
+        if (phase === 'heartbeat') controller.abort();
+        return { ok: true, cancelled: false };
+      },
+      complete: async () => {
+        attempts++;
+        setImmediate(() => controller.abort());
+        throw new Error('offline');
+      },
+    };
+    assert.equal(
+      await processJob(client, job(), {
+        signal: controller.signal,
+        retryMs: 1000,
+        run: async () => {
+          runs++;
+          return result();
+        },
+      }),
+      'cancelled',
+    );
+    assert.equal(attempts, phase === 'retry' ? 1 : 0);
+    assert.equal(runs, phase === 'before-run' ? 0 : 1);
+  }
+});
+
+test('pending renewal cancellation is drained before the completion ownership check', async () => {
+  let releaseRun, releaseHeartbeat, heartbeatStarted;
+  const ready = new Promise((resolve) => {
+    heartbeatStarted = resolve;
+  });
+  const generated = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  const renewal = new Promise((resolve) => {
+    releaseHeartbeat = resolve;
+  });
+  let heartbeats = 0,
+    completions = 0;
+  const pending = processJob(
+    {
+      heartbeat: async () => {
+        heartbeats++;
+        heartbeatStarted();
+        return renewal;
+      },
+      complete: async () => {
+        completions++;
+      },
+    },
+    job(),
+    { heartbeatMs: 1, run: () => generated },
+  );
+  await ready;
+  releaseRun(result());
+  await new Promise(setImmediate);
+  assert.equal(heartbeats, 1);
+  releaseHeartbeat({ ok: true, cancelled: true });
+  assert.equal(await pending, 'cancelled');
+  assert.equal(completions, 0);
+});
+
+test('a transient final heartbeat failure retries ownership before publishing', async () => {
+  let heartbeats = 0,
+    completions = 0;
+  assert.equal(
+    await processJob(
+      {
+        heartbeat: async () => {
+          if (++heartbeats === 1) throw new Error('offline');
+          return { ok: true, cancelled: false };
+        },
+        complete: async () => {
+          completions++;
+        },
+      },
+      job(),
+      { retryMs: 1, run: async () => result() },
+    ),
+    'completed',
+  );
+  assert.equal(heartbeats, 2);
+  assert.equal(completions, 1);
 });
 
 test('cancelled and lost leases stop execution without publishing results', async () => {

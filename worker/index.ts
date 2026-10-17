@@ -227,7 +227,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           })
           .strict(),
       );
-      const exported = await buildProjectExport(project, { bucket: env.ASSETS_BUCKET, owner });
+      const exported = await buildProjectExport(project, {
+        bucket: env.ASSETS_BUCKET,
+        owner,
+        includeZip: false,
+      });
       return json(await publishGithubExport(exported.files, { token: env.GITHUB_TOKEN, ...input }));
     }
     throw new AppError(404, 'not_found', 'This endpoint does not exist.');

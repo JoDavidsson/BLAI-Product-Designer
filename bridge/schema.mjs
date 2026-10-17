@@ -147,7 +147,24 @@ export function validateResult(value, job) {
   if (result.plan)
     for (const key of PLAN_KEYS) if (result.plan[key] === null) delete result.plan[key];
   const screenIds = new Set();
-  const nodeIds = new Set((result.screens ?? []).map((screen) => screen.id));
+  // IDs that survive applying the proposal remain reserved. In particular,
+  // refining one screen must not steal a component ID from an untouched screen.
+  const reserved = new Set();
+  for (const items of ['assets', 'comments', 'requirements', 'chat'])
+    for (const item of job?.context?.[items] ?? []) reserved.add(item.id);
+  function reserveNode(node) {
+    reserved.add(node.id);
+    node.children.forEach(reserveNode);
+  }
+  if (job?.kind === 'wireframe.refine')
+    for (const screen of job.context.screens)
+      if (screen.id !== job.screenId) {
+        reserved.add(screen.id);
+        screen.nodes.forEach(reserveNode);
+      }
+  for (const screen of result.screens ?? [])
+    if (reserved.has(screen.id)) throw new Error('invalid');
+  const nodeIds = new Set([...reserved, ...(result.screens ?? []).map((screen) => screen.id)]);
   let nodes = 0;
   function visit(node, depth) {
     if (depth > 10 || ++nodes > 600 || nodeIds.has(node.id)) throw new Error('invalid');
@@ -223,7 +240,9 @@ export function validateJob(value) {
     typeof value.context !== 'object' ||
     value.context.id !== value.projectId ||
     !Array.isArray(value.context.screens) ||
+    !value.context.plan ||
     typeof value.context.plan !== 'object' ||
+    Array.isArray(value.context.plan) ||
     Buffer.byteLength(JSON.stringify(value.context)) > 1_500_000
   )
     throw new Error('protocol');

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { reconcileReferences, type Project } from '../../shared/model';
 import { api } from './api';
+import { ProjectHistory } from './project-history';
 
 export function useProject() {
   const [project, setProject] = useState<Project | null>(null);
@@ -13,9 +14,17 @@ export function useProject() {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const running = useRef<Promise<Project | null> | null>(null);
   const flushRef = useRef<() => Promise<Project | null>>(async () => null);
+  const history = useRef(new ProjectHistory());
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false });
+  const updateHistoryState = () =>
+    setHistoryState({ canUndo: history.current.canUndo, canRedo: history.current.canRedo });
 
-  const replace = useCallback((value: Project) => {
+  const replace = useCallback((value: Project, options?: { record?: boolean }) => {
     if (timer.current) clearTimeout(timer.current);
+    if (options?.record && current.current?.id === value.id)
+      history.current.record(current.current, value);
+    else history.current.clear();
+    updateHistoryState();
     current.current = value;
     revision.current = value.revision;
     changes.current = 0;
@@ -65,12 +74,9 @@ export function useProject() {
     return current.current;
   }, []);
   flushRef.current = flush;
-  const change = useCallback((value: Project) => {
+  const commitLocal = useCallback((value: Project) => {
     if (!current.current || current.current.id !== value.id) return;
-    current.current = {
-      ...reconcileReferences(value, current.current),
-      revision: revision.current,
-    };
+    current.current = { ...value, revision: revision.current };
     changes.current += 1;
     setProject(current.current);
     setSaveState('pending');
@@ -80,6 +86,32 @@ export function useProject() {
       void flushRef.current().catch(() => undefined);
     }, 650);
   }, []);
+  const change = useCallback(
+    (value: Project) => {
+      if (!current.current || current.current.id !== value.id) return;
+      const next = reconcileReferences(value, current.current);
+      const active = document.activeElement;
+      const editing =
+        active instanceof HTMLElement &&
+        (active.matches('input, textarea') || active.isContentEditable);
+      if (!history.current.record(current.current, next, editing ? active : undefined)) return;
+      updateHistoryState();
+      commitLocal(next);
+    },
+    [commitLocal],
+  );
+  const undo = useCallback(() => {
+    if (!current.current) return;
+    const next = history.current.undo(current.current);
+    if (next) commitLocal(next);
+    updateHistoryState();
+  }, [commitLocal]);
+  const redo = useCallback(() => {
+    if (!current.current) return;
+    const next = history.current.redo(current.current);
+    if (next) commitLocal(next);
+    updateHistoryState();
+  }, [commitLocal]);
   useEffect(() => {
     const preventLoss = (event: BeforeUnloadEvent) => {
       if (changes.current !== savedChanges.current) {
@@ -93,5 +125,16 @@ export function useProject() {
       if (timer.current) clearTimeout(timer.current);
     };
   }, []);
-  return { project, change, replace, flush, saveState, saveError, current };
+  return {
+    project,
+    change,
+    replace,
+    flush,
+    saveState,
+    saveError,
+    current,
+    undo,
+    redo,
+    ...historyState,
+  };
 }

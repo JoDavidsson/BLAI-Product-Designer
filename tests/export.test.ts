@@ -140,7 +140,23 @@ describe('portable product handoff', () => {
     expect(spec).toContain('→ screen screen_b');
     expect(spec).toContain('do not silently treat them as approved behavior');
     expect(spec).toContain('Previous location: Deleted checkout screen · Pay now button');
+    const guide = strFromU8(archive['CODEX.md']);
+    expect(guide).toContain('project_a, revision 1');
+    expect(guide).toContain(
+      '1 accepted requirements, 1 proposed requirements, and 1 open annotations',
+    );
+    expect(guide).toContain('Resolved annotations and chat messages are discussion history');
     const manifest = JSON.parse(strFromU8(archive['manifest.json']));
+    expect(manifest.entrypoint).toBe('CODEX.md');
+    expect(manifest.screens).toEqual([
+      {
+        id: 'screen_a',
+        name: 'My workshops',
+        platform: 'desktop',
+        state: 'default',
+        path: 'screens/01-my-workshops.svg',
+      },
+    ]);
     expect(manifest.assets[0]).toMatchObject({
       status: 'bundled',
       path: 'assets/001-workshop-photo.png',
@@ -225,6 +241,15 @@ describe('portable product handoff', () => {
       'Built-in sample illustration',
     );
     expect(bucket.get).not.toHaveBeenCalled();
+  });
+
+  it('builds the same checked files without allocating an unused ZIP for GitHub', async () => {
+    const project = projectFixture();
+    const options = { bucket: emptyBucket(), owner: 'owner' };
+    const archived = await buildProjectExport(project, options);
+    const plain = await buildProjectExport(project, { ...options, includeZip: false });
+    expect(plain).toEqual({ files: archived.files });
+    expect(plain).not.toHaveProperty('zip');
   });
 });
 
@@ -312,8 +337,18 @@ const SHA = {
   blob: 'c'.repeat(40),
   tree: 'd'.repeat(40),
   commit: 'e'.repeat(40),
+  docsTree: 'f'.repeat(40),
+  destinationTree: '1'.repeat(40),
 };
-function githubMock(patchStatus = 200) {
+interface ExistingEntry {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+}
+const existingFiles = (...paths: string[]): ExistingEntry[] =>
+  paths.map((path) => ({ path, mode: '100644', type: 'blob', sha: SHA.blob }));
+function githubMock(patchStatus = 200, existing: ExistingEntry[] | null = null) {
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = [];
   const request = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url).replace('https://api.github.com/repos/JoDavidsson/example', '');
@@ -322,6 +357,18 @@ function githubMock(patchStatus = 200) {
     if (path.startsWith('/git/ref/heads/')) return Response.json({ object: { sha: SHA.parent } });
     if (path === `/git/commits/${SHA.parent}`)
       return Response.json({ tree: { sha: SHA.baseTree } });
+    if (path === `/git/trees/${SHA.baseTree}`)
+      return Response.json({
+        tree: existing ? [{ path: 'docs', mode: '040000', type: 'tree', sha: SHA.docsTree }] : [],
+        truncated: false,
+      });
+    if (path === `/git/trees/${SHA.docsTree}`)
+      return Response.json({
+        tree: [{ path: 'product', mode: '040000', type: 'tree', sha: SHA.destinationTree }],
+        truncated: false,
+      });
+    if (path === `/git/trees/${SHA.destinationTree}?recursive=1`)
+      return Response.json({ tree: existing, truncated: false });
     if (path === '/git/blobs') return Response.json({ sha: SHA.blob });
     if (path === '/git/trees') return Response.json({ sha: SHA.tree });
     if (path === '/git/commits') return Response.json({ sha: SHA.commit });
@@ -384,7 +431,10 @@ describe('atomic GitHub handoff', () => {
   });
 
   it('removes only stale managed files from the same project’s previous manifest', async () => {
-    const { request, calls } = githubMock();
+    const { request, calls } = githubMock(
+      200,
+      existingFiles('manifest.json', 'spec.md', 'screens/01-old.svg', 'notes.md'),
+    );
     const previous = {
       format: 'blai-product-handoff',
       projectId: 'project_a',
@@ -414,8 +464,10 @@ describe('atomic GitHub handoff', () => {
     }[];
     expect(tree.filter((entry) => entry.sha === null).map((entry) => entry.path)).toEqual([
       'docs/product/screens/01-old.svg',
-      'docs/product/assets/001-old.png',
     ]);
+    // The prior image was already removed manually: asking GitHub to delete it
+    // again would reject an otherwise valid export.
+    expect(tree.some((entry) => entry.path === 'docs/product/assets/001-old.png')).toBe(false);
     expect(tree.some((entry) => /worker|notes/.test(entry.path))).toBe(false);
     expect(
       read.mock.calls.some(([url]) =>
@@ -439,6 +491,7 @@ describe('atomic GitHub handoff', () => {
     expect(calls.filter((call) => call.path === '/git/blobs')).toHaveLength(
       Object.keys(files).length,
     );
+    const existing = githubMock(200, existingFiles('manifest.json'));
     const otherProject = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
       String(url).includes('/contents/')
         ? Response.json({
@@ -452,11 +505,122 @@ describe('atomic GitHub handoff', () => {
               }),
             ),
           })
-        : request(url, init),
+        : existing.request(url, init),
     );
     await expect(
       publishGithubExport(files, { ...destination, fetch: otherProject }),
     ).rejects.toMatchObject({ code: 'GITHUB_DESTINATION_CONFLICT' });
+    expect(existing.calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+
+  it('preserves unmanaged files and rejects package-name collisions before uploading', async () => {
+    for (const path of ['spec.md', 'CODEX.md', 'assets/001-photo.png']) {
+      const { request, calls } = githubMock(200, existingFiles(path, 'notes.md'));
+      await expect(
+        publishGithubExport({ [path]: strToU8('replacement') }, { ...destination, fetch: request }),
+      ).rejects.toMatchObject({ code: 'GITHUB_DESTINATION_CONFLICT' });
+      expect(calls.every((call) => call.method === 'GET')).toBe(true);
+    }
+    const { request, calls } = githubMock(200, existingFiles('notes.md'));
+    await expect(
+      publishGithubExport({ 'spec.md': strToU8('spec') }, { ...destination, fetch: request }),
+    ).resolves.toMatchObject({ commit: SHA.commit });
+    expect(JSON.stringify(calls.find((call) => call.path === '/git/trees')?.body)).not.toContain(
+      'notes.md',
+    );
+  });
+
+  it('does not claim new unmanaged files merely because a folder has this project’s manifest', async () => {
+    const { request, calls } = githubMock(
+      200,
+      existingFiles('manifest.json', 'spec.md', 'CODEX.md'),
+    );
+    const previous = {
+      format: 'blai-product-handoff',
+      projectId: 'project_a',
+      files: [{ path: 'spec.md' }],
+    };
+    const read = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      String(url).includes('/contents/')
+        ? Response.json({ encoding: 'base64', size: 1000, content: btoa(JSON.stringify(previous)) })
+        : request(url, init),
+    );
+    const { files } = await buildProjectExport(projectFixture(), {
+      bucket: emptyBucket(),
+      owner: 'owner',
+      includeZip: false,
+    });
+    await expect(publishGithubExport(files, { ...destination, fetch: read })).rejects.toMatchObject(
+      { code: 'GITHUB_DESTINATION_CONFLICT' },
+    );
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+
+  it('rejects links, files, and submodules occupying destination folders', async () => {
+    for (const [mode, type] of [
+      ['120000', 'blob'],
+      ['100644', 'blob'],
+      ['160000', 'commit'],
+    ]) {
+      const base = githubMock();
+      const request = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+        String(url).endsWith(`/git/trees/${SHA.baseTree}`)
+          ? Response.json({ tree: [{ path: 'docs', mode, type, sha: SHA.blob }] })
+          : base.request(url, init),
+      );
+      await expect(
+        publishGithubExport({ 'spec.md': strToU8('spec') }, { ...destination, fetch: request }),
+      ).rejects.toMatchObject({ code: 'GITHUB_DESTINATION_CONFLICT' });
+      expect(base.calls.every((call) => call.method === 'GET')).toBe(true);
+    }
+    const { request, calls } = githubMock(200, [
+      { path: 'assets', mode: '120000', type: 'blob', sha: SHA.blob },
+    ]);
+    await expect(
+      publishGithubExport(
+        { 'assets/001-photo.png': new Uint8Array([1]) },
+        { ...destination, fetch: request },
+      ),
+    ).rejects.toMatchObject({ code: 'GITHUB_DESTINATION_CONFLICT' });
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+  });
+
+  it('does not publish after an incomplete destination tree or unconfirmed branch response', async () => {
+    const base = githubMock(200, []);
+    const truncated = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      String(url).endsWith('?recursive=1')
+        ? Response.json({ tree: [], truncated: true })
+        : base.request(url, init),
+    );
+    await expect(
+      publishGithubExport({ 'spec.md': strToU8('spec') }, { ...destination, fetch: truncated }),
+    ).rejects.toMatchObject({ code: 'GITHUB_DESTINATION_CONFLICT' });
+    expect(base.calls.every((call) => call.method === 'GET')).toBe(true);
+    const unconfirmed = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      init?.method === 'PATCH'
+        ? Response.json({ object: { sha: SHA.parent } })
+        : base.request(url, init),
+    );
+    await expect(
+      publishGithubExport({ 'spec.md': strToU8('spec') }, { ...destination, fetch: unconfirmed }),
+    ).rejects.toMatchObject({ code: 'GITHUB_INVALID_RESPONSE' });
+  });
+
+  it('leaves the branch untouched when a file upload fails', async () => {
+    const base = githubMock();
+    const request = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+      String(url).endsWith('/git/blobs')
+        ? new Response('private upstream failure', { status: 500 })
+        : base.request(url, init),
+    );
+    await expect(
+      publishGithubExport(
+        { 'spec.md': strToU8('spec'), 'CODEX.md': strToU8('instructions') },
+        { ...destination, fetch: request },
+      ),
+    ).rejects.toMatchObject({ code: 'GITHUB_API_ERROR' });
+    expect(base.calls.every((call) => call.method === 'GET')).toBe(true);
+    expect(request.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
   });
 
   it('rejects token absence and unsafe paths before making remote requests', async () => {

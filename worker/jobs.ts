@@ -12,7 +12,7 @@ import {
 } from '../shared/model';
 import { idSchema, jobKindSchema, resultSchema, projectSchema } from '../shared/validation';
 import { AppError, type Env } from './types';
-import { getProject, proposalToProject, saveProject } from './projects';
+import { assertProjectSize, getProject, proposalToProject, saveProject } from './projects';
 
 const LEASE_MS = 45000;
 const ONLINE_MS = 35000;
@@ -332,6 +332,18 @@ export function validateResultForJob(
         'invalid_requirement',
         'The AI returned a requirement for an unknown screen.',
       );
+  // A valid isolated result can still collide with untouched component IDs or
+  // exceed project-wide limits. Reject it before publishing an unusable proposal.
+  const merged = projectSchema.safeParse(
+    proposalToProject(project, { kind: job.kind, result }, '', job.screen_id ?? undefined),
+  );
+  if (!merged.success)
+    throw new AppError(
+      400,
+      'invalid_result',
+      'The AI result conflicts with existing identifiers or exceeds this project’s limits. Generate a smaller, more focused proposal.',
+    );
+  assertProjectSize(merged.data);
 }
 export async function bridgeOperation(
   env: Env,
