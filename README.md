@@ -10,6 +10,7 @@ Also see the [wireframe editor](docs/screenshots/wireframes.png) and [handoff wo
 
 - **Product planning:** an editable, structured specification beside a Codex conversation. AI changes arrive as proposals with current/proposed plan text, inspectable screen structure, and visible color/type/radius changes before applying.
 - **Wireframes:** nested rows, columns, cards, text, buttons, and other components; drag ordering, cross-screen copy/paste, keyboard editing, parent/layout controls, desktop/mobile screens, explicit state variants, and clickable navigation.
+- **Flows (Pele experiment):** editable Mermaid user journeys and screen states, with live SVG previews, zoom/pan, autosave, undo, and portable source in the handoff. See [the experiment and screenshots](docs/PELE-EXPERIMENT.md).
 - **Moodboard and build review:** image uploads, HTTPS image/webpage references, source notes, and screenshot review.
 - **Annotations:** normalized pins with dotted connectors, threaded replies, resolve/reopen, and conversion to accepted requirements. Notes from removed targets remain in project discussion with their previous location.
 - **Handoff:** ZIP with a `CODEX.md` implementation entrypoint, Markdown, structured project data, screen SVGs, assets, checksums, accepted requirements, and unresolved questions. Optional atomic GitHub export preserves unrelated repository files.
@@ -59,7 +60,7 @@ With the development server running:
 PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium npm run test:e2e
 ```
 
-The four browser workflows create and remove their own projects. The same workflows are configured in GitHub Actions alongside unit/helper tests, formatting, and the production build. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real drag operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, delayed-upload regressions, in-flight undo, revision conflicts, proposal diffs, and stale checkpoint responses. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
+The five browser workflows create and remove their own projects. The same workflows are configured in GitHub Actions alongside unit/helper tests, formatting, and the production build. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real drag operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, delayed-upload regressions, in-flight undo, revision conflicts, proposal diffs, and stale checkpoint responses. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
 
 Unit and integration tests include real local D1/R2, owner isolation, Access authentication, concurrency, helper leases/cancellation, stale AI proposals, imported URL validation, and GitHub API fixtures. Fixtures validate the protocol; they do not establish a live Codex subscription connection or a real GitHub write.
 

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import {
   JOB_KINDS,
+  MAX_DIAGRAMS,
+  MAX_DIAGRAM_SOURCE_LENGTH,
   NODE_TYPES,
   PLAN_FIELDS,
   type AIResult,
@@ -64,6 +66,14 @@ export const screenSchema = z
     nodes: z.array(nodeSchema).max(100),
   })
   .strict();
+export const diagramSchema = z
+  .object({
+    id: idSchema,
+    title: z.string().min(1).max(120),
+    kind: z.enum(['flowchart', 'state']),
+    source: z.string().max(MAX_DIAGRAM_SOURCE_LENGTH),
+  })
+  .strict();
 const date = z.string().datetime();
 const sourceUrl = z
   .string()
@@ -125,6 +135,7 @@ export const projectSchema: z.ZodType<Project> = z
     plan: planSchema,
     design: designSchema,
     screens: z.array(screenSchema).max(30),
+    diagrams: z.array(diagramSchema).max(MAX_DIAGRAMS).optional(),
     assets: z.array(assetSchema).max(100),
     comments: z.array(commentSchema).max(500),
     requirements: z
@@ -174,7 +185,7 @@ export const projectSchema: z.ZodType<Project> = z
       add(screen.id);
       visit(screen.nodes, 1);
     }
-    for (const list of [p.assets, p.comments, p.requirements, p.chat])
+    for (const list of [p.assets, p.comments, p.requirements, p.chat, p.diagrams ?? []])
       for (const item of list) add(item.id);
     if (count > 1000)
       ctx.addIssue({ code: 'custom', message: 'A project supports up to 1,000 components.' });

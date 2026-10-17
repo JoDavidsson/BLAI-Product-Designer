@@ -251,6 +251,82 @@ describe('portable product handoff', () => {
     expect(plain).toEqual({ files: archived.files });
     expect(plain).not.toHaveProperty('zip');
   });
+
+  it('preserves Mermaid drafts byte-for-byte with stable paths, metadata, and checksums', async () => {
+    const project = projectFixture();
+    project.diagrams = [
+      {
+        id: 'diagram_Flow-1',
+        title: 'Workshop journey',
+        kind: 'flowchart',
+        source: 'flowchart LR\r\n  Browse["Explore 🌍"] --> Book["Book a workshop"]\r\n',
+      },
+      {
+        id: 'diagram_states',
+        title: 'Workshop journey',
+        kind: 'state',
+        source: 'stateDiagram-v2\n  [*] --> Loading\n  Loading -->',
+      },
+    ];
+    const { files, zip } = await buildProjectExport(project, {
+      bucket: emptyBucket(),
+      owner: 'owner',
+    });
+    const archive = unzipSync(zip);
+    const manifest = JSON.parse(strFromU8(archive['manifest.json']));
+    expect(manifest.diagrams).toEqual(
+      project.diagrams.map(({ id, title, kind }) => ({
+        id,
+        title,
+        kind,
+        path: `diagrams/${id}.mmd`,
+      })),
+    );
+    for (const diagram of project.diagrams) {
+      const path = `diagrams/${diagram.id}.mmd`;
+      expect(archive[path]).toEqual(strToU8(diagram.source));
+      expect(files[path]).toEqual(archive[path]);
+      const checksum = manifest.files.find((file: { path: string }) => file.path === path);
+      expect(checksum.bytes).toBe(strToU8(diagram.source).byteLength);
+      const digest = await crypto.subtle.digest('SHA-256', archive[path]);
+      expect(checksum.sha256).toBe(
+        Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+      );
+      expect(strFromU8(files['spec.md'])).toContain(`Source: \`${path}\``);
+    }
+    expect(JSON.parse(strFromU8(files['project.json'])).diagrams).toEqual(project.diagrams);
+    expect(strFromU8(files['CODEX.md'])).toContain('not approved requirements');
+    expect(strFromU8(files['spec.md'])).toContain('export does not validate or render them');
+    expect(Object.keys(files).filter((path) => path.startsWith('diagrams/'))).toHaveLength(2);
+
+    project.diagrams.reverse();
+    project.diagrams[0].title = 'Renamed draft';
+    const renamed = await buildProjectExport(project, {
+      bucket: emptyBucket(),
+      owner: 'owner',
+      includeZip: false,
+    });
+    for (const path of Object.keys(files).filter((path) => path.startsWith('diagrams/')))
+      expect(renamed.files[path]).toEqual(files[path]);
+  });
+
+  it('keeps legacy projects compatible and rejects unsafe diagram file IDs', async () => {
+    const project = projectFixture();
+    delete project.diagrams;
+    const legacy = await buildProjectExport(project, { bucket: emptyBucket(), owner: 'owner' });
+    expect(JSON.parse(strFromU8(legacy.files['manifest.json']))).not.toHaveProperty('diagrams');
+    project.diagrams = [];
+    const empty = await buildProjectExport(project, { bucket: emptyBucket(), owner: 'owner' });
+    for (const path of ['CODEX.md', 'spec.md'])
+      expect(empty.files[path]).toEqual(legacy.files[path]);
+    expect(Object.keys(empty.files).some((path) => path.startsWith('diagrams/'))).toBe(false);
+    project.diagrams = [
+      { id: '../escape', title: 'Unsafe', kind: 'flowchart', source: 'flowchart LR\n A --> B' },
+    ];
+    await expect(
+      buildProjectExport(project, { bucket: emptyBucket(), owner: 'owner' }),
+    ).rejects.toMatchObject({ code: 'EXPORT_DIAGRAM_ID' });
+  });
 });
 
 describe('safe layout-aware SVG', () => {
@@ -433,13 +509,22 @@ describe('atomic GitHub handoff', () => {
   it('removes only stale managed files from the same project’s previous manifest', async () => {
     const { request, calls } = githubMock(
       200,
-      existingFiles('manifest.json', 'spec.md', 'screens/01-old.svg', 'notes.md'),
+      existingFiles(
+        'manifest.json',
+        'spec.md',
+        'screens/01-old.svg',
+        'diagrams/diagram_old.mmd',
+        'diagrams/notes.md',
+        'notes.md',
+      ),
     );
     const previous = {
       format: 'blai-product-handoff',
       projectId: 'project_a',
       files: [
         { path: 'screens/01-old.svg' },
+        { path: 'diagrams/diagram_old.mmd' },
+        { path: 'diagrams/notes.md' },
         { path: 'assets/001-old.png' },
         { path: 'spec.md' },
         { path: '../worker.ts' },
@@ -464,6 +549,7 @@ describe('atomic GitHub handoff', () => {
     }[];
     expect(tree.filter((entry) => entry.sha === null).map((entry) => entry.path)).toEqual([
       'docs/product/screens/01-old.svg',
+      'docs/product/diagrams/diagram_old.mmd',
     ]);
     // The prior image was already removed manually: asking GitHub to delete it
     // again would reject an otherwise valid export.
@@ -478,7 +564,11 @@ describe('atomic GitHub handoff', () => {
 
   it('publishes the complete package to a new folder and rejects overwriting another project', async () => {
     const { request, calls } = githubMock();
-    const { files } = await buildProjectExport(projectFixture(), {
+    const project = projectFixture();
+    project.diagrams = [
+      { id: 'diagram_flow', title: 'Journey', kind: 'flowchart', source: 'flowchart LR\n A --> B' },
+    ];
+    const { files } = await buildProjectExport(project, {
       bucket: emptyBucket(),
       owner: 'owner',
     });
@@ -514,7 +604,12 @@ describe('atomic GitHub handoff', () => {
   });
 
   it('preserves unmanaged files and rejects package-name collisions before uploading', async () => {
-    for (const path of ['spec.md', 'CODEX.md', 'assets/001-photo.png']) {
+    for (const path of [
+      'spec.md',
+      'CODEX.md',
+      'assets/001-photo.png',
+      'diagrams/diagram_flow.mmd',
+    ]) {
       const { request, calls } = githubMock(200, existingFiles(path, 'notes.md'));
       await expect(
         publishGithubExport({ [path]: strToU8('replacement') }, { ...destination, fetch: request }),

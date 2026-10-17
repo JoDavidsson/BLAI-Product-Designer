@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createNode,
   createProject,
+  MAX_DIAGRAMS,
+  MAX_DIAGRAM_SOURCE_LENGTH,
   reconcileReferences,
   type AIResult,
+  type ProductDiagram,
   type WireNode,
 } from '../shared/model';
 import { createSampleProject } from '../shared/seed';
@@ -18,6 +21,12 @@ const result = (): AIResult => ({
   screens: null,
   design: null,
   requirements: [],
+});
+const diagram = (id = 'diagram_one'): ProductDiagram => ({
+  id,
+  title: 'Member journey',
+  kind: 'flowchart',
+  source: 'flowchart LR\n  Home --> Details',
 });
 describe('project and AI data safety', () => {
   it('rejects arbitrary component code, unsafe CSS, duplicate IDs and unknown properties', () => {
@@ -142,6 +151,82 @@ describe('project and AI data safety', () => {
     expect(next.chat.map((message) => message.role)).toEqual(['user', 'assistant']);
     expect(next.chat[0]).toEqual(p.chat[0]);
     expect(next.chat[1].text).toBe(result().reply);
+  });
+});
+
+describe('portable diagram drafts', () => {
+  it('accepts legacy projects and preserves incomplete Mermaid drafts without migration', () => {
+    const legacy = createProject();
+    delete legacy.diagrams;
+    expect(projectSchema.parse(legacy)).toEqual(legacy);
+    const draft = {
+      ...legacy,
+      diagrams: [diagram(), { ...diagram('diagram_states'), kind: 'state', source: '' }],
+    };
+    expect(projectSchema.parse(draft)).toEqual(draft);
+  });
+
+  it('bounds diagram count, source length, names, and the supported record shape', () => {
+    const p = createProject();
+    p.diagrams = Array.from({ length: MAX_DIAGRAMS }, (_, index) => diagram(`diagram_${index}`));
+    p.diagrams[0].source = 'a'.repeat(MAX_DIAGRAM_SOURCE_LENGTH);
+    p.diagrams[0].title = 'a'.repeat(120);
+    expect(projectSchema.safeParse(p).success).toBe(true);
+    expect(
+      projectSchema.safeParse({ ...p, diagrams: [...p.diagrams, diagram('extra')] }).success,
+    ).toBe(false);
+    for (const invalid of [
+      { source: 'a'.repeat(MAX_DIAGRAM_SOURCE_LENGTH + 1) },
+      { title: '' },
+      { title: 'a'.repeat(121) },
+      { kind: 'sequence' },
+      { html: '<svg />' },
+    ])
+      expect(
+        projectSchema.safeParse({ ...p, diagrams: [{ ...diagram(), ...invalid }] }).success,
+      ).toBe(false);
+  });
+
+  it('reserves diagram IDs across diagrams, wireframes, and other project objects', () => {
+    const p = createSampleProject();
+    p.assets = [
+      {
+        id: 'asset_one',
+        title: 'Reference',
+        kind: 'reference',
+        imageUrl: '',
+        sourceUrl: '',
+        note: '',
+        createdAt: p.createdAt,
+      },
+    ];
+    for (const id of [p.screens[0].id, p.screens[0].nodes[0].id, p.assets[0].id, p.comments[0].id])
+      expect(projectSchema.safeParse({ ...p, diagrams: [diagram(id)] }).success).toBe(false);
+    expect(projectSchema.safeParse({ ...p, diagrams: [diagram(), diagram()] }).success).toBe(false);
+  });
+
+  it('preserves diagram drafts when applying existing AI plan and screen proposals', () => {
+    const p = createSampleProject();
+    p.diagrams = [diagram()];
+    for (const kind of ['plan.assist', 'wireframe.generate'] as const) {
+      const next = proposalToProject(
+        p,
+        {
+          kind,
+          result: {
+            ...result(),
+            screens:
+              kind === 'wireframe.generate'
+                ? [{ ...p.screens[0], id: 'replacement_screen', nodes: [] }]
+                : null,
+          },
+        },
+        'Improve this draft',
+      );
+      expect(next.diagrams).toEqual(p.diagrams);
+      expect(projectSchema.safeParse(next).success).toBe(true);
+    }
+    expect(resultSchema.safeParse({ ...result(), diagrams: p.diagrams }).success).toBe(false);
   });
 });
 

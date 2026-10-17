@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -47,8 +47,9 @@ import WireframeWorkspace from './components/WireframeWorkspace';
 import BoardWorkspace from './components/BoardWorkspace';
 import AnnotationPanel from './components/AnnotationPanel';
 import ProposalChanges from './components/ProposalChanges';
+const FlowWorkspace = lazy(() => import('./components/FlowWorkspace'));
 
-type View = 'plan' | 'wireframes' | 'moodboard' | 'review' | 'handoff' | 'settings';
+type View = 'plan' | 'flows' | 'wireframes' | 'moodboard' | 'review' | 'handoff' | 'settings';
 const navigation = [
   {
     id: 'plan',
@@ -56,6 +57,7 @@ const navigation = [
     icon: FileText,
     description: 'Give your idea a clear direction',
   },
+  { id: 'flows', label: 'Flows', icon: GitBranch, description: 'Connect the experience' },
   { id: 'wireframes', label: 'Wireframes', icon: Layers3, description: 'Shape the experience' },
   { id: 'moodboard', label: 'Moodboard', icon: Image, description: 'Find the feeling' },
   { id: 'review', label: 'Build review', icon: MessageSquare, description: 'Close the loop' },
@@ -754,6 +756,16 @@ export default function App() {
               onReview={() => setModal('proposals')}
               pending={pending.length}
             />
+          )}
+          {view === 'flows' && (
+            <Suspense fallback={<p className="flow-render-placeholder">Opening flows…</p>}>
+              <FlowWorkspace
+                key={project.id}
+                project={project}
+                onChange={change}
+                onToast={notify}
+              />
+            </Suspense>
           )}
           {view === 'wireframes' && (
             <WireframeWorkspace
@@ -1571,6 +1583,15 @@ function Handoff({
                 Screens & structure<small>Visual exports plus editable component definitions</small>
               </span>
             </li>
+            {(project.diagrams?.length ?? 0) > 0 && (
+              <li>
+                <GitBranch size={16} />
+                <span>
+                  Flows & screen states
+                  <small>{project.diagrams?.length} editable Mermaid drafts for context</small>
+                </span>
+              </li>
+            )}
             <li>
               <Image size={16} />
               <span>

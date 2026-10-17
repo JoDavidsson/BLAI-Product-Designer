@@ -150,7 +150,7 @@ export function validateResult(value, job) {
   // IDs that survive applying the proposal remain reserved. In particular,
   // refining one screen must not steal a component ID from an untouched screen.
   const reserved = new Set();
-  for (const items of ['assets', 'comments', 'requirements', 'chat'])
+  for (const items of ['assets', 'comments', 'requirements', 'chat', 'diagrams'])
     for (const item of job?.context?.[items] ?? []) reserved.add(item.id);
   function reserveNode(node) {
     reserved.add(node.id);

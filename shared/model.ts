@@ -121,6 +121,15 @@ export interface ChatMessage {
   text: string;
   createdAt: string;
 }
+export const MAX_DIAGRAMS = 12;
+export const MAX_DIAGRAM_SOURCE_LENGTH = 12000;
+export interface ProductDiagram {
+  id: string;
+  title: string;
+  kind: 'flowchart' | 'state';
+  /** Portable Mermaid source; incomplete drafts are preserved for editing. */
+  source: string;
+}
 export interface Project {
   id: string;
   title: string;
@@ -132,6 +141,8 @@ export interface Project {
   plan: ProductPlan;
   design: DesignTokens;
   screens: Screen[];
+  /** Optional so projects created before the diagram experiment remain readable. */
+  diagrams?: ProductDiagram[];
   assets: BoardAsset[];
   comments: Annotation[];
   requirements: Requirement[];
@@ -252,6 +263,7 @@ export function createProject(title = 'Untitled product'): Project {
     plan: emptyPlan(),
     design: { ...DEFAULT_DESIGN },
     screens: [],
+    diagrams: [],
     assets: [],
     comments: [],
     requirements: [],

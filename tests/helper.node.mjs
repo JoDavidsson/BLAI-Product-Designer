@@ -151,6 +151,17 @@ test('job envelope rejects unsupported actions and excessive context', () => {
   );
 });
 
+test('diagram context remains compatible without expanding the AI output contract', () => {
+  const diagrams = [
+    { id: 'diagram_1', title: 'Journey', kind: 'flowchart', source: 'flowchart LR\n  A --> B' },
+  ];
+  const request = job({ context: { id: 'project_1', plan: {}, screens: [], diagrams } });
+  assert.deepEqual(validateJob(request).context.diagrams, diagrams);
+  assert.equal(validateResult(result(), request).title, result().title);
+  assert.deepEqual(request.context.diagrams, diagrams);
+  assert.throws(() => validateResult({ ...result(), diagrams }, request), /invalid/);
+});
+
 test('refinement and generation cannot reuse identifiers that survive in the project', () => {
   const request = job({
     kind: 'wireframe.refine',
@@ -160,9 +171,10 @@ test('refinement and generation cannot reuse identifiers that survive in the pro
       plan: {},
       screens: [screen(), { ...screen([node('node_other')]), id: 'screen_other' }],
       assets: [{ id: 'asset_1' }],
+      diagrams: [{ id: 'diagram_1', title: 'Journey', kind: 'flowchart', source: '' }],
     },
   });
-  for (const id of ['screen_other', 'node_other', 'asset_1'])
+  for (const id of ['screen_other', 'node_other', 'asset_1', 'diagram_1'])
     assert.throws(
       () => validateResult({ ...result(), screens: [screen([node(id)])] }, request),
       /invalid/,
@@ -172,6 +184,14 @@ test('refinement and generation cannot reuse identifiers that survive in the pro
     () =>
       validateResult(
         { ...result(), screens: [{ ...screen(), id: 'asset_1' }] },
+        { ...request, kind: 'wireframe.generate' },
+      ),
+    /invalid/,
+  );
+  assert.throws(
+    () =>
+      validateResult(
+        { ...result(), screens: [{ ...screen(), id: 'diagram_1' }] },
         { ...request, kind: 'wireframe.generate' },
       ),
     /invalid/,
