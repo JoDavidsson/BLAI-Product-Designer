@@ -92,6 +92,8 @@ interface Props {
   onToast: (message: string) => void;
   onGenerate: (kind: JobKind, instruction: string, screenId?: string) => void;
   helperOnline: boolean;
+  /** Open a source from the product overview without changing project content. */
+  focusTarget?: { screenId: string; nodeId?: string; requestId: number };
 }
 
 const STATES: ScreenState[] = ['default', 'loading', 'empty', 'error', 'success'];
@@ -410,6 +412,7 @@ export default function WireframeWorkspace({
   onToast,
   onGenerate,
   helperOnline,
+  focusTarget,
 }: Props) {
   const [screenId, setScreenId] = useState(project.screens[0]?.id ?? '');
   const [selectedId, setSelectedId] = useState<string>();
@@ -430,6 +433,9 @@ export default function WireframeWorkspace({
   const viewport = useRef<HTMLDivElement>(null);
   const aiDialog = useRef<HTMLElement>(null);
   const aiReturnFocus = useRef<HTMLElement | null>(null);
+  const handledFocusRequest = useRef<number | undefined>(undefined);
+  const pendingNodeFocus = useRef<string | undefined>(undefined);
+  const previousScreenId = useRef(screenId);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 7 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -450,10 +456,50 @@ export default function WireframeWorkspace({
     setScreenName(screen?.name ?? '');
   }, [screen?.id, screen?.name]);
   useEffect(() => {
+    if (previousScreenId.current === screenId) return;
+    previousScreenId.current = screenId;
     setSelectedId(undefined);
     setCommentTarget(undefined);
     setSelectedComment(undefined);
   }, [screenId]);
+  useEffect(() => {
+    if (!focusTarget || handledFocusRequest.current === focusTarget.requestId) return;
+    const destination = project.screens.find((item) => item.id === focusTarget.screenId);
+    if (!destination) {
+      handledFocusRequest.current = focusTarget.requestId;
+      return;
+    }
+    setPreview(false);
+    setLibrary(false);
+    setCommentMode(false);
+    setInspector('properties');
+    setCommentTarget(undefined);
+    setSelectedComment(undefined);
+    setAiOpen(false);
+    if (screenId !== destination.id) {
+      setScreenId(destination.id);
+      return;
+    }
+    // Apply the node after the screen change clears its previous selection.
+    handledFocusRequest.current = focusTarget.requestId;
+    const nodeId =
+      focusTarget.nodeId && findNode(destination.nodes, focusTarget.nodeId)
+        ? focusTarget.nodeId
+        : undefined;
+    pendingNodeFocus.current = nodeId;
+    setSelectedId(nodeId);
+    if (!nodeId) viewport.current?.scrollTo({ top: 0, left: 0 });
+  }, [focusTarget, project.screens, screenId]);
+  useEffect(() => {
+    if (!pendingNodeFocus.current || pendingNodeFocus.current !== selectedId || preview) return;
+    const element = [
+      ...(viewport.current?.querySelectorAll<HTMLElement>('[data-node-id]') ?? []),
+    ].find((item) => item.dataset.nodeId === selectedId);
+    if (!element) return;
+    pendingNodeFocus.current = undefined;
+    element.scrollIntoView({ block: 'center', inline: 'nearest' });
+    element.focus({ preventScroll: true });
+  }, [screenId, selectedId, preview, focusTarget?.requestId]);
   useEffect(() => {
     const element = viewport.current;
     if (!element) return;

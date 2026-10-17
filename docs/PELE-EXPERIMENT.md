@@ -1,38 +1,41 @@
-# Pele experiment
+# Automatic product overview
 
-This branch evaluates [Pele](https://pele.run/) as a renderer for user flows and screen states alongside BLAI's editable wireframes. It uses `pele@1.6.0`, pinned in the lockfile, with only the flowchart and state diagram types. The workspace loads when **Flows** is opened; the renderer is not part of the initial application bundle.
+[Review the running-app screenshots below](#screenshots). Pele draws an automatic view of the product that already exists. Users never write diagram syntax, maintain a separate diagram, or generate new product decisions through this workspace.
 
 ## Try it
 
-1. Run the app using the README's local instructions and open **Flows**.
-2. Choose **New user flow** or **New screen states**. These are editable examples, not AI output.
-3. Rename the diagram and edit the Mermaid source. The preview updates after a short pause. Use the zoom buttons, `+` / `−`, or Ctrl/⌘ + scroll to enlarge it; drag or use arrow keys to pan. `0` resets the view.
-4. Try an incomplete statement. The error appears as text, the invalid draft remains saved, and fixing it restores the preview.
-5. Reload, switch projects, duplicate/delete a diagram, or undo an edit. Diagrams use the existing project persistence and history.
-6. Download the specification from **Handoff**. Each diagram appears as exact Mermaid source in `diagrams/{id}.mmd`, plus structured metadata and checksums.
+1. Open a project with a product plan, wireframes, or other material.
+2. Select **Visualize product** on the plan page, or open **Overview** and select the button there.
+3. Explore **Product map**, **Written journey**, and **Screen connections**. Select a diagram item or use the **Explore an item** dropdown to read its full original sources.
+4. Use **Open plan section**, **Open wireframe**, or another source link to return to the original item. Plan sections, components, requirements, discussions, references, and conversation messages keep their original locations.
+5. Edit the original material and return to Overview. The picture reflects the current project automatically. **Refresh overview** also redraws it on demand. Zoom buttons, `+` / `−`, Ctrl/⌘ + scroll, drag, arrow keys, and `0` support larger maps.
+6. Download the handoff. Its three overview files and source index are rebuilt from the saved project every time, even if Overview was never opened.
 
-The current helper receives diagrams as project context. This experiment does not add AI diagram generation, node dragging, linked screen navigation, or diagram comment pins. Those need separate product decisions. Wireframes retain their existing component editing and annotations.
+Viewing, selecting, zooming, refreshing, and navigating through the overview do not change project content or revisions. Only a project-specific session preference remembers that the overview was opened; no duplicate specification or generated SVG is saved. The feature works without an AI/helper connection.
+
+## What the picture means
+
+- **Product map:** groups existing plan sections, screen/component definitions, accepted and proposed requirements, annotations/replies, image references, conversation history, and design settings. Labels contain short excerpts; the inspector keeps the complete source text. Grouping lines describe organization, not behavior or approval.
+- **Written journey:** shows explicitly numbered items in their written order. Numbering does not establish a transition between independent journeys. Arbitrary prose stays quoted context; the app does not invent actions or guess their order. Separate numbered lists remain separate.
+- **Screen connections:** shows actual screens and state labels. Arrows come only from existing component navigation targets. It does not infer links from screen names or turn loading/empty/error variants into invented transitions.
+- **Things to look at:** points out recorded open questions and missing source connections. These are observations, not newly approved requirements.
+
+Large collections are grouped for readability; all entries remain available through the source inspector/search. Long numbered lists show the first 22 items individually and retain later items in a labeled group. Screen navigation drawings are limited to 150 arrows; the details retain every original action. These limits are disclosed beside the diagram when reached.
+
+Legacy manual diagram drafts from the initial experiment remain preserved in project data and exports for compatibility. They are excluded from the automatic overview and have no authoring interface.
 
 ## Screenshots
 
-These are Chromium captures of the running application using a temporary Wayfinder example, with diagram text edited through the UI. They are not mockups. The fixture was removed afterward.
+Actual Chromium captures at 1600 × 1100 using the existing editable Wayfinder sample. The diagrams were derived by clicking **Visualize product**. The capture verifies the original project JSON and revision are unchanged, then deletes its temporary fixture.
 
-![Wayfinder user journey, rendered by Pele](screenshots/pele-user-flow.png)
+![Automatic product map with original plan sources](screenshots/pele-product-overview.png)
 
-![Wayfinder discovery screen states, rendered by Pele](screenshots/pele-screen-states.png)
+![Existing wireframe connections and screen source details](screenshots/pele-screen-connections.png)
 
-## Integration choices
+## Implementation
 
-- Mermaid text is the portable source of truth. Generated SVG is never saved to the project. `src/lib/diagrams.ts` contains the replaceable rendering adapter.
-- Old projects without a `diagrams` field continue to load. A project supports 12 diagrams, 120-character names, and 12,000 characters per source. The usual whole-project storage limit still applies.
-- Only registered flowchart/state renderers are available. Rendering uses a 1 MB SVG output limit and 150-edge flowchart limit. Pele's edge limit does not apply to state diagrams. Rendering runs in the browser with debouncing; a worker timeout would be appropriate before supporting much larger diagrams.
-- Links and images are disabled. No icon resolver or user-provided rendering options are accepted. Pele escapes labels; React renders error messages as text. Browser tests exercise hostile labels, click directives, and remote image syntax.
-- Pele owns only its SVG/zoom subtree. React cleans up zoom listeners and observers on re-render and unmount. Styling uses CSS custom properties.
-- Handoff exports all Mermaid drafts exactly, including unfinished syntax. The guide identifies them as design context, not accepted requirements. The Worker neither parses nor renders Mermaid; diagram previews are not exported as SVG in this experiment.
-- The package is new, so keep the exact pin and run diagram regressions before an upgrade. Its MIT license and bundled Lucide ISC notice are retained in [`public/licenses/pele.txt`](../public/licenses/pele.txt) and included in the built site's assets.
+`shared/overview.ts` is a pure, deterministic projection of the project with source references. It is shared by the browser and handoff exporter. Mermaid is an internal generated representation; no application input accepts it. `src/lib/diagrams.ts` renders with pinned `pele@1.6.0`, loading only mindmap and flowchart types in the lazy Overview workspace. The Worker builds text/source files and does not bundle the renderer.
 
-## Checks
+Generated labels and IDs are encoded, and external links/images are disabled. Project content cannot supply render options, HTML, icons, or click handlers. Application-owned SVG node handlers select matching source records; navigation is resolved against the current project's records. Rendering has bounded labels, graph sizes, a 65,536-character source limit and 1 MB output limit. Source text is displayed by React as text. The MIT/ISC notices remain in `public/licenses/pele.txt` and the built assets.
 
-`tests/e2e-flows.mjs` exercises the real browser renderer, autosave/reload, both diagram kinds, invalid drafts, recovery, zoom, undo, duplicate/delete, project isolation, ZIP contents, hostile markup, and narrow layouts. It runs with the existing browser workflows via `npm run test:e2e`.
-
-Unit/helper tests cover source limits, type mismatch, legacy project compatibility, identifier collisions, AI proposal preservation, exact UTF-8 source export, checksums, and GitHub ownership/stale-file behavior. See [validation](VALIDATION.md) for the completed checks and external limitations.
+Browser tests cover automatic generation, original-content/revision preservation, source navigation, live source edits, reloads, project isolation, empty projects, hostile labels, zoom, handoff output, and narrow layouts. Unit tests cover all source categories and statuses, deterministic output, conservative journey parsing, explicit-only navigation, complete grouped source coverage, legacy compatibility, and export provenance. See [validation](VALIDATION.md) and [handoff details](HANDOFF.md).

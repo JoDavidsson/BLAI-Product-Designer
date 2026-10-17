@@ -47,7 +47,8 @@ import WireframeWorkspace from './components/WireframeWorkspace';
 import BoardWorkspace from './components/BoardWorkspace';
 import AnnotationPanel from './components/AnnotationPanel';
 import ProposalChanges from './components/ProposalChanges';
-const FlowWorkspace = lazy(() => import('./components/FlowWorkspace'));
+import type { OverviewSource } from '../shared/overview';
+const ProductOverview = lazy(() => import('./components/ProductOverview'));
 
 type View = 'plan' | 'flows' | 'wireframes' | 'moodboard' | 'review' | 'handoff' | 'settings';
 const navigation = [
@@ -57,7 +58,7 @@ const navigation = [
     icon: FileText,
     description: 'Give your idea a clear direction',
   },
-  { id: 'flows', label: 'Flows', icon: GitBranch, description: 'Connect the experience' },
+  { id: 'flows', label: 'Overview', icon: GitBranch, description: 'See the whole product' },
   { id: 'wireframes', label: 'Wireframes', icon: Layers3, description: 'Shape the experience' },
   { id: 'moodboard', label: 'Moodboard', icon: Image, description: 'Find the feeling' },
   { id: 'review', label: 'Build review', icon: MessageSquare, description: 'Close the loop' },
@@ -89,6 +90,72 @@ export default function App() {
     canRedo,
   } = useProject();
   const [view, setView] = useState<View>('plan');
+  const [visualizeRequest, setVisualizeRequest] = useState<{
+    projectId: string;
+    requestId: number;
+  }>();
+  const [sourceFocus, setSourceFocus] = useState<{
+    projectId: string;
+    source: OverviewSource;
+    requestId: number;
+    view: View;
+  }>();
+  function openOverviewSource(source: OverviewSource) {
+    if (!project) return;
+    const destination: View =
+      source.kind === 'screen'
+        ? 'wireframes'
+        : source.kind === 'requirement' || source.kind === 'comment'
+          ? 'handoff'
+          : source.kind === 'design'
+            ? 'moodboard'
+            : source.kind === 'asset'
+              ? project.assets.find((asset) => asset.id === source.assetId)?.kind === 'screenshot'
+                ? 'review'
+                : 'moodboard'
+              : 'plan';
+    setSourceFocus((previous) => ({
+      projectId: project.id,
+      source,
+      requestId: (previous?.requestId ?? 0) + 1,
+      view: destination,
+    }));
+    setView(destination);
+  }
+  useEffect(() => {
+    if (!sourceFocus || sourceFocus.projectId !== project?.id || view !== sourceFocus.view) return;
+    const source = sourceFocus.source;
+    const id =
+      source.kind === 'plan'
+        ? `plan-${source.key}`
+        : source.kind === 'requirement'
+          ? `requirement-${source.requirementId}`
+          : source.kind === 'comment'
+            ? `comment-${source.commentId}`
+            : source.kind === 'chat'
+              ? `chat-${source.messageId}`
+              : source.kind === 'design'
+                ? 'design-direction'
+                : source.kind === 'project'
+                  ? 'product-plan-document'
+                  : undefined;
+    if (!id) return;
+    let target: HTMLElement | null = null;
+    const frame = requestAnimationFrame(() => {
+      target = document.getElementById(id);
+      target?.scrollIntoView({ block: 'center', behavior: 'instant' });
+      if (target) {
+        target.classList.add('overview-source-focus');
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+      }
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      target?.classList.remove('overview-source-focus');
+    };
+  }, [sourceFocus, project?.id, view]);
+  const activeSource = sourceFocus?.projectId === project?.id ? sourceFocus : undefined;
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [session, setSession] = useState<{
     email: string;
@@ -732,6 +799,13 @@ export default function App() {
             <Planner
               key={project.id}
               project={project}
+              onVisualize={() => {
+                setVisualizeRequest((previous) => ({
+                  projectId: project.id,
+                  requestId: (previous?.requestId ?? 0) + 1,
+                }));
+                setView('flows');
+              }}
               onChange={change}
               onGenerate={generate}
               prompt={chatDrafts[project.id] || ''}
@@ -758,12 +832,12 @@ export default function App() {
             />
           )}
           {view === 'flows' && (
-            <Suspense fallback={<p className="flow-render-placeholder">Opening flows…</p>}>
-              <FlowWorkspace
+            <Suspense fallback={<p>Opening your overview…</p>}>
+              <ProductOverview
                 key={project.id}
                 project={project}
-                onChange={change}
-                onToast={notify}
+                onNavigate={openOverviewSource}
+                visualizeRequest={visualizeRequest}
               />
             </Suspense>
           )}
@@ -775,6 +849,11 @@ export default function App() {
               onToast={notify}
               onGenerate={generate}
               helperOnline={helper.online}
+              focusTarget={
+                activeSource?.source.kind === 'screen'
+                  ? { ...activeSource.source, requestId: activeSource.requestId }
+                  : undefined
+              }
             />
           )}
           {view === 'moodboard' && (
@@ -787,6 +866,11 @@ export default function App() {
               helperOnline={helper.online}
               onAddAsset={addAsset}
               mode="reference"
+              focusAsset={
+                activeSource?.source.kind === 'asset'
+                  ? { assetId: activeSource.source.assetId, requestId: activeSource.requestId }
+                  : undefined
+              }
             />
           )}
           {view === 'review' && (
@@ -799,6 +883,11 @@ export default function App() {
               helperOnline={helper.online}
               onAddAsset={addAsset}
               mode="screenshot"
+              focusAsset={
+                activeSource?.source.kind === 'asset'
+                  ? { assetId: activeSource.source.assetId, requestId: activeSource.requestId }
+                  : undefined
+              }
             />
           )}
           {view === 'handoff' && (
@@ -814,6 +903,9 @@ export default function App() {
               }}
               busy={busy}
               onNavigate={setView}
+              selectedCommentId={
+                activeSource?.source.kind === 'comment' ? activeSource.source.commentId : undefined
+              }
               onToast={notify}
             />
           )}
@@ -1115,6 +1207,7 @@ function Planner({
   pending,
   prompt,
   onPromptChange,
+  onVisualize,
 }: {
   project: Project;
   onChange: (p: Project) => void;
@@ -1127,6 +1220,7 @@ function Planner({
   onCancel: (job: AIJob) => void;
   onReview: () => void;
   pending: number;
+  onVisualize: () => void;
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [draftTitle, setDraftTitle] = useState(project.title);
@@ -1154,6 +1248,9 @@ function Planner({
             <p>
               Put your thinking into words. Shape it with Codex. Build from a shared understanding.
             </p>
+            <button className="btn outlined small overview-plan-button" onClick={onVisualize}>
+              <GitBranch size={14} /> Visualize product
+            </button>
           </div>
           <div
             className="readiness-ring"
@@ -1183,7 +1280,7 @@ function Planner({
             requirements
           </span>
         </div>
-        <article className="plan-document">
+        <article className="plan-document" id="product-plan-document">
           <div className="document-topline">
             <span>
               <FileText size={14} /> PRODUCT SPECIFICATION
@@ -1327,7 +1424,11 @@ function Planner({
             </div>
           ) : (
             project.chat.map((message) => (
-              <div key={message.id} className={`chat-message ${message.role}`}>
+              <div
+                key={message.id}
+                id={`chat-${message.id}`}
+                className={`chat-message ${message.role}`}
+              >
                 <strong>{message.role === 'user' ? 'You' : 'Codex'}</strong>
                 <p>{message.text}</p>
               </div>
@@ -1406,6 +1507,7 @@ function Handoff({
   busy,
   onNavigate,
   onToast,
+  selectedCommentId,
 }: {
   project: Project;
   onChange: (p: Project) => void;
@@ -1415,6 +1517,7 @@ function Handoff({
   busy: boolean;
   onNavigate: (v: View) => void;
   onToast: (message: string) => void;
+  selectedCommentId?: string;
 }) {
   const toggleRequirement = (id: string) => {
     const requirement = project.requirements.find((item) => item.id === id);
@@ -1552,7 +1655,12 @@ function Handoff({
           {
             <section className="handoff-annotations">
               <div className="section-label">PROJECT DISCUSSION</div>
-              <AnnotationPanel project={project} onChange={onChange} onToast={onToast} />
+              <AnnotationPanel
+                project={project}
+                onChange={onChange}
+                onToast={onToast}
+                selectedId={selectedCommentId}
+              />
             </section>
           }
         </div>
@@ -1583,15 +1691,13 @@ function Handoff({
                 Screens & structure<small>Visual exports plus editable component definitions</small>
               </span>
             </li>
-            {(project.diagrams?.length ?? 0) > 0 && (
-              <li>
-                <GitBranch size={16} />
-                <span>
-                  Flows & screen states
-                  <small>{project.diagrams?.length} editable Mermaid drafts for context</small>
-                </span>
-              </li>
-            )}
+            <li>
+              <GitBranch size={16} />
+              <span>
+                Automatic product overview
+                <small>Product map, written journey, and defined screen links</small>
+              </span>
+            </li>
             <li>
               <Image size={16} />
               <span>

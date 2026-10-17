@@ -7,6 +7,7 @@ import {
   type Annotation,
   type Project,
 } from '../shared/model';
+import type { buildProductOverview } from '../shared/overview';
 import {
   buildProjectExport,
   publishGithubExport,
@@ -148,6 +149,16 @@ describe('portable product handoff', () => {
     expect(guide).toContain('Resolved annotations and chat messages are discussion history');
     const manifest = JSON.parse(strFromU8(archive['manifest.json']));
     expect(manifest.entrypoint).toBe('CODEX.md');
+    expect(manifest.overview).toMatchObject({
+      derivedFrom: 'project.json',
+      sourcesPath: 'overview/sources.json',
+      graphs: ['product', 'journey', 'screens'].map((id) => ({
+        id,
+        path: `overview/${id}.mmd`,
+      })),
+    });
+    expect(strFromU8(archive['CODEX.md'])).toContain('These views introduce no new decisions');
+    expect(strFromU8(archive['spec.md'])).toContain('## Automatic product overview');
     expect(manifest.screens).toEqual([
       {
         id: 'screen_a',
@@ -250,6 +261,107 @@ describe('portable product handoff', () => {
     const plain = await buildProjectExport(project, { ...options, includeZip: false });
     expect(plain).toEqual({ files: archived.files });
     expect(plain).not.toHaveProperty('zip');
+  });
+
+  it('derives current overview sources on every export without changing the project', async () => {
+    const project = projectFixture();
+    project.plan.problem = '  Members need accessible workshops.\nKeep the original spacing.  ';
+    const before = structuredClone(project);
+    const options = { bucket: emptyBucket(), owner: 'owner', includeZip: false as const };
+    const first = await buildProjectExport(project, options);
+    expect(project).toEqual(before);
+    const overview = JSON.parse(strFromU8(first.files['overview/sources.json'])) as ReturnType<
+      typeof buildProductOverview
+    >;
+    expect(overview.projectId).toBe(project.id);
+    const entries = overview.graphs.flatMap((graph) => graph.nodes.flatMap((node) => node.entries));
+    expect(entries).toContainEqual(
+      expect.objectContaining({
+        body: project.plan.problem,
+        source: { kind: 'plan', key: 'problem' },
+      }),
+    );
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          body: 'Save the booking.',
+          status: 'accepted',
+          source: { kind: 'requirement', requirementId: 'req_accepted' },
+        }),
+        expect.objectContaining({
+          body: 'Maybe accept payments.',
+          status: 'proposed',
+          source: { kind: 'requirement', requirementId: 'req_proposed' },
+        }),
+        expect.objectContaining({
+          body: 'Which payment provider?',
+          status: 'open',
+          source: { kind: 'comment', commentId: 'comment_b' },
+        }),
+        expect.objectContaining({
+          body: 'Keep this discussion history.',
+          status: 'resolved',
+          source: { kind: 'comment', commentId: 'comment_c' },
+        }),
+        expect.objectContaining({
+          title: 'My workshops',
+          status: 'default',
+          source: { kind: 'screen', screenId: 'screen_a' },
+        }),
+        expect.objectContaining({
+          body: expect.stringContaining('Book workshop'),
+          source: { kind: 'screen', screenId: 'screen_a', nodeId: 'button' },
+        }),
+      ]),
+    );
+    project.plan.problem = 'Updated problem after the last overview.';
+    project.screens[0].name = 'Workshop library';
+    project.comments[1].body = 'Updated unresolved payment question.';
+    const edited = structuredClone(project);
+    const second = await buildProjectExport(project, options);
+    expect(project).toEqual(edited);
+    expect(second.files['overview/product.mmd']).not.toEqual(first.files['overview/product.mmd']);
+    expect(second.files['overview/screens.mmd']).not.toEqual(first.files['overview/screens.mmd']);
+    const refreshed = strFromU8(second.files['overview/sources.json']);
+    expect(refreshed).toContain(project.plan.problem);
+    expect(refreshed).toContain('Workshop library');
+    expect(refreshed).toContain(project.comments[1].body);
+    expect(refreshed).not.toContain('Members need accessible workshops.');
+    expect(refreshed).not.toContain('Which payment provider?');
+  });
+
+  it('exports screen connections only when a component has an explicit navigation target', async () => {
+    const project = projectFixture();
+    const button = project.screens[0].nodes[0].children[0].children[0];
+    delete button.action;
+    project.screens.push({
+      id: 'screen_b',
+      name: 'Confirmation',
+      platform: 'desktop',
+      state: 'success',
+      description: 'The saved booking.',
+      nodes: [],
+    });
+    project.plan.journeys = 'My workshops leads to Confirmation after booking.';
+    const options = { bucket: emptyBucket(), owner: 'owner', includeZip: false as const };
+    const readScreenEdges = (files: Record<string, Uint8Array>) => {
+      const overview = JSON.parse(strFromU8(files['overview/sources.json'])) as ReturnType<
+        typeof buildProductOverview
+      >;
+      return overview.graphs.find((graph) => graph.id === 'screens')!.edges;
+    };
+    const unlinked = await buildProjectExport(project, options);
+    expect(readScreenEdges(unlinked.files).filter((edge) => edge.kind === 'navigation')).toEqual(
+      [],
+    );
+    button.action = { screenId: 'screen_b' };
+    const linked = await buildProjectExport(project, options);
+    expect(readScreenEdges(linked.files).filter((edge) => edge.kind === 'navigation')).toHaveLength(
+      1,
+    );
+    delete button.action;
+    const removed = await buildProjectExport(project, options);
+    expect(removed.files['overview/screens.mmd']).toEqual(unlinked.files['overview/screens.mmd']);
   });
 
   it('preserves Mermaid drafts byte-for-byte with stable paths, metadata, and checksums', async () => {
@@ -515,6 +627,12 @@ describe('atomic GitHub handoff', () => {
         'screens/01-old.svg',
         'diagrams/diagram_old.mmd',
         'diagrams/notes.md',
+        'overview/product.mmd',
+        'overview/journey.mmd',
+        'overview/screens.mmd',
+        'overview/sources.json',
+        'overview/custom.mmd',
+        'overview/notes.md',
         'notes.md',
       ),
     );
@@ -525,6 +643,12 @@ describe('atomic GitHub handoff', () => {
         { path: 'screens/01-old.svg' },
         { path: 'diagrams/diagram_old.mmd' },
         { path: 'diagrams/notes.md' },
+        { path: 'overview/product.mmd' },
+        { path: 'overview/journey.mmd' },
+        { path: 'overview/screens.mmd' },
+        { path: 'overview/sources.json' },
+        { path: 'overview/custom.mmd' },
+        { path: 'overview/notes.md' },
         { path: 'assets/001-old.png' },
         { path: 'spec.md' },
         { path: '../worker.ts' },
@@ -550,11 +674,15 @@ describe('atomic GitHub handoff', () => {
     expect(tree.filter((entry) => entry.sha === null).map((entry) => entry.path)).toEqual([
       'docs/product/screens/01-old.svg',
       'docs/product/diagrams/diagram_old.mmd',
+      'docs/product/overview/product.mmd',
+      'docs/product/overview/journey.mmd',
+      'docs/product/overview/screens.mmd',
+      'docs/product/overview/sources.json',
     ]);
     // The prior image was already removed manually: asking GitHub to delete it
     // again would reject an otherwise valid export.
     expect(tree.some((entry) => entry.path === 'docs/product/assets/001-old.png')).toBe(false);
-    expect(tree.some((entry) => /worker|notes/.test(entry.path))).toBe(false);
+    expect(tree.some((entry) => /worker|notes|custom/.test(entry.path))).toBe(false);
     expect(
       read.mock.calls.some(([url]) =>
         String(url).endsWith(`/contents/docs/product/manifest.json?ref=${SHA.parent}`),
@@ -609,6 +737,10 @@ describe('atomic GitHub handoff', () => {
       'CODEX.md',
       'assets/001-photo.png',
       'diagrams/diagram_flow.mmd',
+      'overview/product.mmd',
+      'overview/journey.mmd',
+      'overview/screens.mmd',
+      'overview/sources.json',
     ]) {
       const { request, calls } = githubMock(200, existingFiles(path, 'notes.md'));
       await expect(
@@ -756,6 +888,16 @@ describe('atomic GitHub handoff', () => {
     await expect(
       publishGithubExport({ '../code.ts': strToU8('bad') }, { ...destination, fetch: request }),
     ).rejects.toMatchObject({ code: 'INVALID_EXPORT_FILE' });
+    for (const path of [
+      'overview/custom.mmd',
+      'overview/notes.md',
+      'overview/product.svg',
+      'overview/../spec.md',
+      'overview/project.json',
+    ])
+      await expect(
+        publishGithubExport({ [path]: strToU8('bad') }, { ...destination, fetch: request }),
+      ).rejects.toMatchObject({ code: 'INVALID_EXPORT_FILE' });
     expect(request).not.toHaveBeenCalled();
     expect(
       validateGithubDestination('JoDavidsson/BLAI-Product-Designer', 'main', 'docs/handoff/'),

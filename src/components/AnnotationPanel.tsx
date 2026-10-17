@@ -55,15 +55,20 @@ export default function AnnotationPanel({
   }, [target]);
   useEffect(() => {
     if (!selectedId) return;
-    if (project.comments.find((comment) => comment.id === selectedId)?.status === 'resolved')
+    if (
+      !showResolved &&
+      project.comments.find((comment) => comment.id === selectedId)?.status === 'resolved'
+    ) {
       setShowResolved(true);
-    const frame = requestAnimationFrame(() =>
-      document
-        .getElementById(`comment-${selectedId}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }),
-    );
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      const thread = document.getElementById(`comment-${selectedId}`);
+      thread?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      thread?.focus({ preventScroll: true });
+    });
     return () => cancelAnimationFrame(frame);
-  }, [selectedId]);
+  }, [selectedId, showResolved]);
 
   const filtered = project.comments.filter(
     (comment) =>
@@ -191,6 +196,7 @@ export default function AnnotationPanel({
           <article
             key={comment.id}
             id={`comment-${comment.id}`}
+            tabIndex={-1}
             className={`annotation-thread ${comment.id === selectedId ? 'is-selected' : ''}`}
           >
             <div className="annotation-thread-meta">

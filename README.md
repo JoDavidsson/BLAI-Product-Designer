@@ -10,7 +10,7 @@ Also see the [wireframe editor](docs/screenshots/wireframes.png) and [handoff wo
 
 - **Product planning:** an editable, structured specification beside a Codex conversation. AI changes arrive as proposals with current/proposed plan text, inspectable screen structure, and visible color/type/radius changes before applying.
 - **Wireframes:** nested rows, columns, cards, text, buttons, and other components; drag ordering, cross-screen copy/paste, keyboard editing, parent/layout controls, desktop/mobile screens, explicit state variants, and clickable navigation.
-- **Flows (Pele experiment):** editable Mermaid user journeys and screen states, with live SVG previews, zoom/pan, autosave, undo, and portable source in the handoff. See [the experiment and screenshots](docs/PELE-EXPERIMENT.md).
+- **Automatic overview:** one click visualizes the existing plan, written journeys, screen connections, decisions, comments, and references. Explore original sources and return to edit them; no diagram authoring or AI connection is required. See [the overview and screenshots](docs/PELE-EXPERIMENT.md).
 - **Moodboard and build review:** image uploads, HTTPS image/webpage references, source notes, and screenshot review.
 - **Annotations:** normalized pins with dotted connectors, threaded replies, resolve/reopen, and conversion to accepted requirements. Notes from removed targets remain in project discussion with their previous location.
 - **Handoff:** ZIP with a `CODEX.md` implementation entrypoint, Markdown, structured project data, screen SVGs, assets, checksums, accepted requirements, and unresolved questions. Optional atomic GitHub export preserves unrelated repository files.

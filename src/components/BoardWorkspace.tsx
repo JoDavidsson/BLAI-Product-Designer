@@ -34,6 +34,8 @@ interface Props {
   helperOnline: boolean;
   /** Merge an asynchronous upload into the latest project, never the upload's snapshot. */
   onAddAsset?: (projectId: string, asset: BoardAsset) => boolean;
+  /** Open a source asset from the product overview in this board's existing mode. */
+  focusAsset?: { assetId: string; requestId: number };
 }
 
 function safeLink(value: string): string | undefined {
@@ -86,6 +88,7 @@ export default function BoardWorkspace({
   onGenerate,
   helperOnline,
   onAddAsset,
+  focusAsset,
 }: Props) {
   const [selectedId, setSelectedId] = useState<string>();
   const [selectedCommentId, setSelectedCommentId] = useState<string>();
@@ -110,6 +113,7 @@ export default function BoardWorkspace({
   const projectRef = useRef(project);
   const mountedRef = useRef(true);
   const transfersRef = useRef(new Set<AbortController>());
+  const handledFocusRequest = useRef<number | undefined>(undefined);
   projectRef.current = project;
   const screenshots = mode === 'screenshot';
   const assets = project.assets.filter((asset) => asset.kind === mode);
@@ -145,6 +149,7 @@ export default function BoardWorkspace({
     setError('');
     return () => {
       mountedRef.current = false;
+      handledFocusRequest.current = undefined;
       if (transfersRef.current.size) {
         for (const controller of transfersRef.current) controller.abort();
         transfersRef.current.clear();
@@ -154,6 +159,18 @@ export default function BoardWorkspace({
       }
     };
   }, [mode, project.id]);
+  useEffect(() => {
+    if (!focusAsset || handledFocusRequest.current === focusAsset.requestId) return;
+    handledFocusRequest.current = focusAsset.requestId;
+    const asset = project.assets.find(
+      (item) => item.id === focusAsset.assetId && item.kind === mode,
+    );
+    if (!asset) return;
+    setAddOpen(false);
+    setSearch('');
+    setOnlyCommented(false);
+    setSelectedId(asset.id);
+  }, [focusAsset, mode, project.assets]);
   useEffect(() => {
     const dialog = addDialogRef.current;
     if (addOpen && dialog && !dialog.open) dialog.showModal();
@@ -556,7 +573,11 @@ export default function BoardWorkspace({
             </>
           ) : (
             <>
-              <div className="board-palette" aria-label="Current project color palette">
+              <div
+                className="board-palette"
+                id="design-direction"
+                aria-label="Current project color palette"
+              >
                 {[
                   project.design.accent,
                   project.design.background,

@@ -2568,3 +2568,7 @@ button:hover:not(:disabled) {
 .pill {
   color: #9d7bb3;
 }
+
+.overview-plan-button {
+  margin-top: 16px;
+}

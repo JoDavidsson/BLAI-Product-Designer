@@ -5,7 +5,7 @@ Validated in the managed Linux development environment with Node 24.19.0 and sys
 ## Passed
 
 - `npm ci`: clean dependency installation.
-- `npm test`: 65 tests across nine files, including real local Worker/D1/R2 integration.
+- `npm test`: 84 tests across ten files, including real local Worker/D1/R2 integration.
 - `npm run test:helper`: 19 tests for protocol, schemas, cancellation, timeouts, credentials handling, and Linux setup.
 - `npm run build`: TypeScript and both client and Worker production bundles.
 - `npm run format:check`: source formatting.
@@ -18,7 +18,9 @@ The second iteration additionally covers undo/redo across autosaves, an older sa
 
 Backend regressions verify UTF-8 storage limits, complete-project AI validation, 100-image ownership checks, and GitHub destination ownership/symlink/stale-file handling. Helper regressions include cancellation through heartbeat and completion races, streamed Unicode, and a real subprocess that requires SIGKILL after ignoring SIGTERM. GitHub Actions now includes a browser job; its hosted run is separate from the local validation recorded here.
 
-The Pele experiment additionally verifies both diagram renderers, bounded source and flowchart work, disabled links/images, autosave and legacy project compatibility, invalid-draft recovery, keyboard/button zoom, diagram undo/duplication/deletion, project isolation, exact Mermaid ZIP bytes and checksums, and GitHub stale diagram cleanup. All five browser workflows passed on this branch. The renderer workspace is a separate 158.88 kB JavaScript chunk (58.94 kB gzip), loaded only when Flows is opened; no Pele renderer is bundled into the Worker. License notices are included in the built static assets.
+The automatic Pele overview additionally verifies real mindmap and flowchart rendering, bounded output, disabled links/images, and inert hostile source text. Tests confirm visualization preserves the full project and revision, makes no AI requests, and provides no diagram authoring interface. Pointer and keyboard inspection link back to exact plan sections, screens, components, requirements, resolved discussions, image references, and conversation messages. Current-source refresh, reloads, project isolation, narrow layouts, complete grouped source coverage, conservative numbered-list handling, and explicit-only screen navigation are covered.
+
+Exports rebuild all three overview files and a full source index from the current project. Tests verify provenance, checksums, legacy draft preservation, safe owned-file cleanup, and destination collision handling. All five browser workflows passed on this branch. The Overview workspace is a separate 152.40 kB JavaScript chunk (57.29 kB gzip), loaded only when Overview is opened; the Worker shares the pure projection but does not bundle Pele. License notices are included in the built static assets.
 
 Screenshots in `docs/screenshots/` show the actual application using the editable Wayfinder example.
 

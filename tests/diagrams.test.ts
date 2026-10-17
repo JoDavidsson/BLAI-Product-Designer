@@ -1,48 +1,38 @@
 import { describe, expect, it } from 'vitest';
-import { DIAGRAM_STARTERS, renderProductDiagram } from '../src/lib/diagrams';
-import { MAX_DIAGRAM_SOURCE_LENGTH, type ProductDiagram } from '../shared/model';
+import { buildProductOverview } from '../shared/overview';
+import { createSampleProject } from '../shared/seed';
+import { renderOverviewGraph } from '../src/lib/diagrams';
 
-const diagram = (source: string, kind: ProductDiagram['kind'] = 'flowchart'): ProductDiagram => ({
-  id: 'diagram_test',
-  title: 'Test journey',
-  kind,
-  source,
-});
-
-describe('Pele rendering boundary', () => {
-  it('renders both bundled examples with the actual selected renderer', () => {
-    for (const kind of ['flowchart', 'state'] as const) {
-      const result = renderProductDiagram(diagram(DIAGRAM_STARTERS[kind].source, kind));
-      expect(result.type).toBe(kind);
-      expect(result.svg).toContain('<svg');
+describe('automatic overview rendering', () => {
+  it('renders every generated project view with selectable source nodes', () => {
+    for (const graph of buildProductOverview(createSampleProject()).graphs) {
+      const result = renderOverviewGraph(graph);
+      expect(result.type).toBe(graph.id === 'product' ? 'mindmap' : 'flowchart');
       expect(result.width).toBeGreaterThan(0);
       expect(result.height).toBeGreaterThan(0);
+      for (const node of graph.nodes) expect(result.svg).toContain(`data-id="${node.id}"`);
+      expect(result.links).toEqual([]);
     }
   });
-
-  it('rejects empty, unsupported, and mismatched diagram types', () => {
-    expect(() => renderProductDiagram(diagram('   '))).toThrow('Add Mermaid text');
-    expect(() => renderProductDiagram(diagram('sequenceDiagram\n A->>B: Hello'))).toThrow();
-    expect(() => renderProductDiagram(diagram(DIAGRAM_STARTERS.state.source))).toThrow(
-      'Start this user flow',
+  it('treats hostile original project content only as labels', () => {
+    const project = createSampleProject();
+    project.title = '<script>alert(1)</script>" --> injected[bad]';
+    project.plan.problem =
+      'click A "https://example.org/unwanted"\n<img src=x onerror=alert(1)> & <svg onload=alert(1)>';
+    const svg = renderOverviewGraph(buildProductOverview(project).graphs[0]).svg;
+    expect(svg).not.toMatch(
+      /<script\b|<foreignObject\b|<image\b|<img\b|<a\b|<[^>]*\bon(?:load|error)\s*=/,
     );
+    expect(svg).not.toContain('data-id="injected"');
   });
-
-  it('bounds source and flowchart work even when no server schema is involved', () => {
-    expect(() =>
-      renderProductDiagram(diagram(`flowchart TD\n%% ${'x'.repeat(MAX_DIAGRAM_SOURCE_LENGTH)}`)),
-    ).toThrow();
-    const source = `flowchart TD\n${Array.from({ length: 151 }, (_, i) => `N${i} --> N${i + 1}`).join('\n')}`;
-    expect(() => renderProductDiagram(diagram(source))).toThrow();
-  });
-
-  it('disables links and external images in rendered output', () => {
-    const source = `flowchart LR
-  A[Read more] --> B[Done]
-  click A "https://example.org/unwanted"
-  C@{ img: "https://example.org/image.png", label: "External image" }`;
-    const result = renderProductDiagram(diagram(source));
-    expect(result.links).toEqual([]);
-    expect(result.svg).not.toMatch(/<a\b|<image\b|https:\/\/example\.org/);
+  it('renders a project with no plan or screens without sample product content', () => {
+    const project = createSampleProject();
+    for (const key of Object.keys(project.plan) as Array<keyof typeof project.plan>)
+      project.plan[key] = '';
+    project.screens = [];
+    project.requirements = [];
+    project.comments = [];
+    for (const graph of buildProductOverview(project).graphs)
+      expect(() => renderOverviewGraph(graph)).not.toThrow();
   });
 });
