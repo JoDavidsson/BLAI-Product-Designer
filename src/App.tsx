@@ -1771,7 +1771,7 @@ function Connections({
             <br />
             <span>A new place to create.</span>
           </h1>
-          <p>Use your Codex subscription through a helper on your Linux computer.</p>
+          <p>Use one BLAI Helper for Designer, Writer, and future tools on your Linux computer.</p>
         </div>
       </div>
       <div className="connection-card">
@@ -1780,8 +1780,8 @@ function Connections({
             <Code2 size={25} />
           </span>
           <div>
-            <h2>Codex Helper</h2>
-            <p>Your subscription. Your computer. Your creative partner.</p>
+            <h2>BLAI Helper</h2>
+            <p>One manager. Your existing ChatGPT sign-in.</p>
           </div>
           <span className={`pill ${helper.online ? 'green' : ''}`}>
             <span className="status-dot" />
@@ -1805,39 +1805,65 @@ function Connections({
           <div>
             <span>1</span>
             <section>
-              <h3>Get the designer helper</h3>
+              <h3>Download the manager and Designer settings</h3>
               <p>
-                Clone this project on your Linux computer, install its dependencies, and keep your
-                existing Codex subscription login.
+                Save both files to Downloads on your Linux computer. The settings contain private
+                connection credentials. If BLAI Helper is already installed, you only need the
+                settings.
               </p>
-              <code>git clone https://github.com/JoDavidsson/BLAI-Product-Designer.git</code>
-            </section>
-          </div>
-          <div>
-            <span>2</span>
-            <section>
-              <h3>Connect this workspace</h3>
-              <p>
-                Download the private settings file after configuring the new Worker’s Access and
-                bridge secrets. Keep this file on your computer.
-              </p>
+              <a className="btn outlined" href="/blai-helper.tar.gz" download>
+                <ArrowDownToLine size={15} /> Download BLAI Helper
+              </a>{' '}
               <button
                 className="btn outlined"
                 onClick={() => void settingsDownload()}
                 disabled={downloading}
               >
                 <ArrowDownToLine size={15} />
-                {downloading ? 'Preparing…' : 'Download helper settings'}
+                {downloading ? 'Preparing…' : 'Download Designer settings'}
               </button>
             </section>
           </div>
           <div>
-            <span>3</span>
+            <span>2</span>
             <section>
-              <h3>Start your helper</h3>
+              <h3>Connect Designer</h3>
               <p>
-                Follow the Linux setup instructions in the repository. The designer uses a separate
-                service and configuration from the writing tool.
+                Requires Node.js 22.13 or newer, a Linux systemd user session, and an up-to-date
+                Codex CLI signed in with ChatGPT. Stop any old helper running in a terminal with
+                Ctrl+C before installing.
+              </p>
+              <details>
+                <summary>First time installing BLAI Helper</summary>
+                <p>
+                  Open a terminal on this Linux computer and run these commands in order. Stop if a
+                  command reports an error.
+                </p>
+                <pre>
+                  <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
+tar -xzf "$HOME/Downloads/blai-helper.tar.gz" -C "$blai_helper_dir"
+cd "$blai_helper_dir/blai-helper"
+npm ci --omit=dev
+node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
+node bin/blai-helper.mjs doctor
+node bin/blai-helper.mjs install --migrate`}</code>
+                </pre>
+              </details>
+              <details>
+                <summary>BLAI Helper is already installed</summary>
+                <p>
+                  Add Designer to the same manager. Installation restarts the service; your other
+                  configured tools reconnect afterward.
+                </p>
+                <pre>
+                  <code>{`"$HOME/.local/bin/blai-helper" add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
+"$HOME/.local/bin/blai-helper" doctor
+"$HOME/.local/bin/blai-helper" install --migrate`}</code>
+                </pre>
+              </details>
+              <p>
+                To combine an older Writer helper too, import its settings before migration using
+                the full instructions below. Each tool keeps its own private connection settings.
               </p>
               <a
                 className="text-button"
@@ -1845,8 +1871,22 @@ function Connections({
                 target="_blank"
                 rel="noreferrer"
               >
-                Open setup instructions <ArrowUpRight size={14} />
+                Full setup and migration instructions <ArrowUpRight size={14} />
               </a>
+            </section>
+          </div>
+          <div>
+            <span>3</span>
+            <section>
+              <h3>Check the connection</h3>
+              <pre>
+                <code>{`"$HOME/.local/bin/blai-helper" status`}</code>
+              </pre>
+              <p>
+                Designer should show connected here and in the terminal. Try a request in the Design
+                assistant to confirm Codex can answer. Once installation succeeds, you can close the
+                terminal; the manager starts at Linux sign-in.
+              </p>
             </section>
           </div>
         </div>

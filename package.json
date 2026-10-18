@@ -11,12 +11,14 @@
     "db:local": "wrangler d1 migrations apply blai-designer --local",
     "preview": "vite preview --host 127.0.0.1",
     "helper": "node bridge/start.mjs",
-    "deploy": "npm run build && wrangler deploy",
-    "test:helper": "node --test tests/helper.node.mjs",
+    "deploy": "npm run build:release && wrangler deploy",
+    "test:helper": "node --test tests/helper.node.mjs tests/helper-status.node.mjs tests/helper-runner.node.mjs",
     "test:e2e": "node tests/e2e-app.mjs && node tests/e2e-wireframe.mjs && node tests/e2e-board.mjs && node tests/e2e-resilience.mjs && node tests/e2e-overview.mjs",
     "helper:configure": "node bridge/configure-linux.mjs",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "helper:package": "node scripts/package-shared-helper.mjs",
+    "build:release": "npm run build && npm run helper:package"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

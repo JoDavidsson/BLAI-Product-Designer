@@ -140,6 +140,9 @@ export async function runCodex(
 }
 
 function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
+  // Managed jobs stay in the worker group so its supervisor can reap them after a crash.
+  const detached =
+    process.platform !== 'win32' && process.env.BLAI_HELPER_MANAGED !== '1' && !process.connected;
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('cancelled'));
@@ -148,7 +151,7 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
     const child = spawnProcess(command, args, {
       env: runnerEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32',
+      detached,
     });
     const decoder = new StringDecoder('utf8');
     let buffer = '',
@@ -160,13 +163,13 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
     let forceKill;
     const kill = () => {
       try {
-        if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
+        if (detached && child.pid) process.kill(-child.pid, 'SIGTERM');
         else child.kill('SIGTERM');
       } catch {}
       if (!forceKill)
         forceKill = setTimeout(() => {
           try {
-            if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
+            if (detached && child.pid) process.kill(-child.pid, 'SIGKILL');
             else child.kill('SIGKILL');
           } catch {}
         }, 2000);

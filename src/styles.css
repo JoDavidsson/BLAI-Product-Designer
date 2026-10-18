@@ -1590,6 +1590,22 @@ button:hover:not(:disabled) {
   font-size: 10px;
   flex-shrink: 0;
 }
+.setup-steps section {
+  min-width: 0;
+  width: 100%;
+}
+.setup-steps details {
+  margin-top: 16px;
+}
+.setup-steps summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 550;
+}
+.setup-steps pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .setup-steps h3 {
   font-size: 12px;
   font-weight: 550;
@@ -1609,7 +1625,8 @@ button:hover:not(:disabled) {
   border-radius: 5px;
   padding: 12px;
   color: #ac86c5;
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.6;
   margin-top: 13px;
   overflow-wrap: anywhere;
 }
@@ -2347,7 +2364,7 @@ button:hover:not(:disabled) {
     gap: 10px;
   }
   .setup-steps code {
-    font-size: 8px;
+    font-size: 11px;
   }
   .connection-footer {
     padding: 18px;

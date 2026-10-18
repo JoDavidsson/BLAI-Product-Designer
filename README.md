@@ -15,7 +15,7 @@ Also see the [wireframe editor](docs/screenshots/wireframes.png) and [handoff wo
 - **Annotations:** normalized pins with dotted connectors, threaded replies, resolve/reopen, and conversion to accepted requirements. Notes from removed targets remain in project discussion with their previous location.
 - **Handoff:** ZIP with a `CODEX.md` implementation entrypoint, Markdown, structured project data, screen SVGs, assets, checksums, accepted requirements, and unresolved questions. Optional atomic GitHub export preserves unrelated repository files.
 - **Persistence:** private projects in D1, images in R2, automatic revisions, session undo/redo, named checkpoints, and conflict recovery with downloadable local drafts.
-- **Codex subscription:** a dedicated Linux helper uses an existing ChatGPT Codex login and outbound polling. The writing tool's service and configuration remain separate.
+- **Codex subscription:** the shared BLAI Helper manages Designer, Writer, and future tool adapters in one Linux service using an existing ChatGPT Codex login and outbound polling. Each tool keeps its own private settings and queue.
 
 The included **Wayfinder** project is a clearly labeled, editable example. AI is never simulated in the application: an offline helper produces an explicit connection state, not fabricated output.
 
@@ -99,14 +99,14 @@ The application is prepared for a **new** Worker, D1 database, R2 bucket, and Ac
    | `DESIGNER_ACCESS_CLIENT_SECRET` | Its Access service-token secret                                              |
    | `GITHUB_TOKEN`                  | Optional token with permission to update the chosen specification repository |
 
-6. Apply the production schema and deploy:
+6. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-product-designer` checkouts beside each other. `npm run build:release` builds the app and packages the shared `blai-helper.tar.gz` download from those repositories. `npm run deploy` uses this release build automatically. Apply the production schema and deploy:
 
    ```bash
    npx wrangler d1 migrations apply blai-designer --remote
    npm run deploy
    ```
 
-7. Sign in and open **Connect Codex**. Download the private settings file, then follow [the Linux helper guide](docs/CODEX-HELPER.md). The helper uses the same installed Codex CLI and subscription login as the writer, through its own configuration and optional `blai-designer-codex.service`.
+7. Sign in and open **Connect Codex**. Download BLAI Helper and the private Designer settings, then follow [the Linux setup and migration guide](docs/CODEX-HELPER.md). If the manager is already installed, import Designer settings into it. The shared `blai-helper.service` manages both tools using the existing Codex CLI and ChatGPT sign-in, with separate private profiles. Import the existing Writer settings before migration to include Writer in the same service.
 
 No Codex login credentials are uploaded to Cloudflare. Helper setup downloads are owner-only, are not cached, and should be kept out of Git. The `.blai-designer/` configuration directory and local environment files are ignored.
 

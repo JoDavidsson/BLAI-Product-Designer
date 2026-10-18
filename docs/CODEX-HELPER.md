@@ -1,71 +1,95 @@
-# BLAI Designer Codex Helper
+# BLAI Helper: connect Designer on Linux
 
-The designer uses your existing ChatGPT Codex subscription through a small Node.js process on your Linux computer. It polls the designer's Cloudflare Worker over HTTPS, runs one bounded Codex job, and returns an editable proposal. There is no OpenAI API-key dependency or paid API fallback. Normal subscription usage limits still apply.
+The manager runs one Linux user service, `blai-helper.service`, with a separate adapter and private settings for each tool. Writer and Designer reuse your existing ChatGPT Codex sign-in. Their queues, access credentials, and work directories stay separate. Keep the computer awake and online for AI requests from any device; normal subscription limits apply.
 
-This is a separate adaptation of the [AI writing tool](https://github.com/JoDavidsson/ai-writing-tool) helper at commit `655415110c8b23e0b9b83f2ec5b19b9cd3c4c62f`. It uses a separate service (`blai-designer-codex.service`), private configuration (`.blai-designer/config.json`), bridge secret, Cloudflare Access service token, queue, and work directory. It never changes the writer's app, database, `.codex-bridge` configuration, or `writing-partner-codex.service`. The existing Codex account sign-in is reused.
+## Before installing
 
-## Before connecting
+Use Linux with a systemd user session, Node.js **22.13 or later**, npm, and an up-to-date official [Codex CLI](https://github.com/openai/codex). On the computer that will run the helper:
 
-1. Use Node.js 22 or newer and an up-to-date official [Codex CLI](https://github.com/openai/codex). Run `codex login` and sign in with ChatGPT. `codex login status` must report ChatGPT authentication. This helper requires `exec --ignore-user-config`, `--ignore-rules`, `--ephemeral`, and `--output-schema` (inspected CLI: `0.159.2`).
-2. Deploy the designer Worker and configure the authentication and resources described in the repository README. Set `DESIGNER_OWNER_EMAIL` to your allowed Cloudflare Access identity.
-3. Configure a **designer-specific** Cloudflare Access service token and a Service Auth policy allowing it on `/api/codex`. Keep the browser app protected by your normal identity policy. Use the token only for this helper.
-4. Generate a new random bridge secret with at least 32 characters; store it as the Worker's `DESIGNER_BRIDGE_SECRET` and in the local helper settings. Never reuse the writer bridge secret or send credentials in chat. Do not put the helper secret or Access service token in browser code.
-
-No inbound Linux port, VPN, or public Linux server is required: all helper requests are outbound. The app shows the helper online only after a successful compatible claim/heartbeat.
-
-## Configure without prompts
-
-Create a private JSON file on your Linux machine (for example `~/designer-helper-settings.json`, mode `600`):
-
-```json
-{
-  "site": "https://your-designer.example.com",
-  "bridgeSecret": "YOUR_NEW_DESIGNER_BRIDGE_SECRET",
-  "accessClientId": "YOUR_DESIGNER_ACCESS_CLIENT_ID",
-  "accessClientSecret": "YOUR_DESIGNER_ACCESS_CLIENT_SECRET",
-  "codexPath": "/absolute/path/to/codex"
-}
+```sh
+node --version
+codex login status
 ```
 
-Use the real secret through a secure local editor or secret manager. The example values are placeholders. `codexPath` is optional when `codex` is on `PATH`. HTTP origins are permitted only for `localhost`, `127.0.0.1`, or `[::1]` local development; service tokens are optional only there. A production origin must be HTTPS with no path, query, or embedded credentials.
+If Codex is missing or needs updating, run `npm install -g @openai/codex`. If it is not signed in with ChatGPT, run `codex login` and choose ChatGPT. The manager checks the login and the CLI features required by the configured tools; it does not sign in for you or copy your Codex login to Cloudflare.
 
-From the designer checkout:
+## First installation
 
-```bash
-node bridge/configure-linux.mjs --settings ~/designer-helper-settings.json
+1. Open **Connect Codex** in Designer on your Linux computer.
+2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper.tar.gz` and `blai-designer-helper.json`.
+3. Stop any older helper running in a terminal with **Ctrl+C**. The installer handles known background services during migration.
+4. Open a terminal and run these commands in order. Stop if any command reports an error.
+
+```sh
+blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
+tar -xzf "$HOME/Downloads/blai-helper.tar.gz" -C "$blai_helper_dir"
+cd "$blai_helper_dir/blai-helper"
+npm ci --omit=dev
+node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
+```
+
+### Include an existing Writer helper
+
+To manage both tools together, import Writer before installing. Download **Writer settings** from the writing app's **Connect Codex** page, then run this from the same directory:
+
+```sh
+node bin/blai-helper.mjs add writer --adapter writer --settings "$HOME/Downloads/blai-codex-config.json"
+```
+
+You can use the full path to your existing `.codex-bridge/config.json` instead of the downloaded file. Importing copies it into the manager's private profile and preserves the original file. Writer and Designer share the Codex account, while keeping their own site credentials and job queues.
+
+### Install and check
+
+```sh
+node bin/blai-helper.mjs doctor
+node bin/blai-helper.mjs install --migrate
+"$HOME/.local/bin/blai-helper" status
+```
+
+The installer validates the configured tools before changing services. It can migrate `writing-partner-codex.service` and `blai-designer-codex.service` for tools you have imported. A legacy service whose tool has not been imported stays in place. Existing configuration files are preserved. If the new service fails its connection check, the installer attempts to restore the previous services and reports the failure.
+
+Designer should show connected in the terminal and app. Try a request in the Design assistant: a reply verifies a complete Codex job, while a connected indicator confirms contact with the queue. Once installation succeeds, you can close the terminal. The service starts at Linux sign-in; keeping it running after logout depends on your Linux system's user-service/lingering settings. It cannot run while the computer sleeps or is switched off.
+
+## Add Designer to an installed manager
+
+Download **Designer settings** from **Connect Codex**, then run:
+
+```sh
+"$HOME/.local/bin/blai-helper" add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
+"$HOME/.local/bin/blai-helper" doctor
+"$HOME/.local/bin/blai-helper" install --migrate
+"$HOME/.local/bin/blai-helper" status
+```
+
+Existing configured tools are retained. Identical settings can be imported again; differing settings require an explicit change rather than silent replacement. Each tool has a private profile under `~/.config/blai-helper/profiles/<tool>/config.json`. You can delete downloaded settings copies after successful import. Never share those files in chat or commit them to Git.
+
+## Manage the service
+
+```sh
+"$HOME/.local/bin/blai-helper" status
+"$HOME/.local/bin/blai-helper" doctor
+systemctl --user status blai-helper.service
+journalctl --user -u blai-helper.service --follow
+```
+
+Restart with `systemctl --user restart blai-helper.service`; stop with `systemctl --user stop blai-helper.service`. These affect all tools managed by the service. The manager isolates adapters so a failed tool can restart without interrupting healthy tools. No inbound Linux port, VPN, or public Linux server is required.
+
+The manager's source, update instructions, and adapter contract live in [BLAI/helper](https://github.com/JoDavidsson/BLAI/tree/main/helper). Future tools can add an adapter while reusing the same service and local account.
+
+## Deployment and developer setup
+
+The private settings download at `/api/helper/setup` requires the signed-in owner. The Worker must have `DESIGNER_OWNER_EMAIL`, `DESIGNER_BRIDGE_SECRET`, `DESIGNER_ACCESS_CLIENT_ID`, and `DESIGNER_ACCESS_CLIENT_SECRET` configured as described in the repository README. Use a Designer-specific Cloudflare Access service token and Service Auth policy. Keep browser access restricted to the allowed Google identity. Do not reuse Writer's bridge secret or put credentials in browser code.
+
+The shared archive contains source and locked dependency manifests only, with no account files or service credentials. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-product-designer` checkouts beside each other, then use `npm run build:release`. This builds the app and puts `blai-helper.tar.gz` in `dist/client/`. `npm run deploy` uses this release build automatically. Each application serves the same manager package. A plain `npm run build` removes generated archives, so use `build:release` for the final production build.
+
+The standalone adapter is still available for development:
+
+```sh
+node bridge/configure-linux.mjs --settings /absolute/path/to/designer-settings.json
 npm run helper
 ```
 
-The configure command checks the existing subscription login and required CLI switches, then writes a private configuration file. It refuses to overwrite differing settings, follow a configuration symlink, or change the permissions of a shared parent directory. Delete your downloaded source settings securely after configuration if you no longer need that copy.
-
-For a configuration outside the checkout, choose a dedicated private directory:
-
-```bash
-mkdir -m 700 -p ~/.config/blai-designer
-node bridge/configure-linux.mjs \
-  --settings ~/designer-helper-settings.json \
-  --config ~/.config/blai-designer/config.json \
-  --codex-path /absolute/path/to/codex
-node bridge/start.mjs ~/.config/blai-designer/config.json
-```
-
-## Optional Linux user service
-
-Install only after the foreground helper successfully connects:
-
-```bash
-node bridge/configure-linux.mjs \
-  --settings ~/designer-helper-settings.json \
-  --install-service
-systemctl --user status blai-designer-codex.service
-journalctl --user -u blai-designer-codex.service --follow
-```
-
-For a custom configuration, include the same `--config` argument or run `node bridge/install-service.mjs /absolute/path/to/config.json`. The service uses the Node executable and `PATH` active during installation. It starts at user login, uses `UMask=0077`, and restarts on failure. A different existing designer service is preserved and requires an explicit backup before replacement. Keeping the helper running after logout requires the machine's usual systemd lingering configuration.
-
-Stop with `systemctl --user stop blai-designer-codex.service`. Uninstall with `systemctl --user disable --now blai-designer-codex.service`, remove only `~/.config/systemd/user/blai-designer-codex.service`, then run `systemctl --user daemon-reload`. Preserve the writer service.
-
-The helper prevents two processes from using the same configuration with `helper.lock`. After an unclean machine/process shutdown, stop the designer service and verify that the recorded PID is no longer running before removing the stale lock beside its configuration. Restart the service afterward.
+This uses the checkout's `.blai-designer/config.json` rather than a shared-manager profile. Do not run it alongside the managed Designer adapter for the same site. The configuration must use a full HTTPS origin; loopback HTTP is allowed for local development. `codexPath` is optional when Codex is on `PATH`. The adapter requires `exec --ignore-user-config`, `--ignore-rules`, `--ephemeral`, and `--output-schema` (inspected CLI: `0.159.2`). It verifies ChatGPT authentication before configuring. A configuration symlink or differing existing settings is rejected.
 
 ## Protocol version 1
 
@@ -110,4 +134,4 @@ npm run test:helper
 
 The helper tests use the built-in Node test runner and no account/network calls. They cover strict schema normalization, bounds and links, retained identifier collisions, Unicode streaming, forbidden tools, subprocess cancellation and timeout, dedicated headers and versioned protocol, shutdown races, lease loss, completion retries, private configuration, noninteractive setup, and service separation. Cancellation escalation is also checked against a real local subprocess that ignores `SIGTERM`. Passing these tests establishes protocol behavior; it is not proof of a live subscription job.
 
-If Settings shows offline, confirm the foreground helper is running, check the exact designer origin, and verify its Access service token and bridge secret. HTML sign-in pages, redirects, wrong protocol versions, and HTTP authentication failures are rejected. Confirm `DESIGNER_OWNER_EMAIL` matches the authenticated project owner. A `login` failure requires restoring the local ChatGPT Codex sign-in; `limit` means subscription usage/rate limits; `timeout` means the bounded run exceeded its time; `invalid` means output or a tool call failed validation. These failures never silently apply a partial design.
+If Connect Codex shows offline, run `~/.local/bin/blai-helper status` and `doctor`, check that `blai-helper.service` is running, and verify the exact Designer origin and its private Access/bridge settings. HTML sign-in pages, redirects, wrong protocol versions, and HTTP authentication failures are rejected. Confirm `DESIGNER_OWNER_EMAIL` matches the authenticated project owner. A `login` failure requires restoring the local ChatGPT Codex sign-in; `limit` means subscription usage/rate limits; `timeout` means the bounded run exceeded its time; `invalid` means output or a tool call failed validation. These failures never silently apply a partial design.
