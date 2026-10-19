@@ -2,6 +2,14 @@
 
 The manager runs one Linux user service, `blai-helper.service`, with a separate adapter and private settings for each tool. Writer and Designer reuse your existing ChatGPT Codex sign-in. Their queues, access credentials, and work directories stay separate. Keep the computer awake and online for AI requests from any device; normal subscription limits apply.
 
+## Designer model and context
+
+Designer runs **GPT-6 Astra at Medium reasoning** through the existing **ChatGPT Codex subscription**. The Designer adapter explicitly sets `--model gpt-6-astra`, `model_reasoning_effort="medium"`, and `model_context_window=872000` for each request. It uses the local ChatGPT sign-in and its subscription allowance.
+
+The 872,000-token context is the current published maximum for `gpt-6-astra` in [OpenAI's Codex model catalog](https://github.com/openai/codex/blob/d28be12577cf5e267c97d3018a490d76da4d28e7/codex-rs/models-manager/models.json#L34). The catalog's default context is 272,000 tokens; this adapter explicitly selects the larger supported window. The app's bounded project snapshot, request validation, and structured-output limits are enforced separately; configuring the model context does not expand those application limits.
+
+Install **BLAI Helper 1.0.3** on the Linux computer running your helper to apply these Designer settings. The model settings take effect after the local installation succeeds.
+
 ## Before installing
 
 Use Linux with a systemd user session, Node.js **22.13 or later**, npm, and an up-to-date official [Codex CLI](https://github.com/openai/codex). On the computer that will run the helper:
@@ -13,16 +21,16 @@ codex login status
 
 If Codex is missing or needs updating, run `npm install -g @openai/codex`. If it is not signed in with ChatGPT, run `codex login` and choose ChatGPT. The manager checks the login and the CLI features required by the configured tools; it does not sign in for you or copy your Codex login to Cloudflare.
 
-## Update an installed manager to 1.0.2
+## Update an installed manager to 1.0.3
 
-Version 1.0.2 adds Designer progress from real helper activity and token counts supplied by Codex. Counts become available when Codex reports usage at the end of a turn; unreported counts remain unknown. Older helpers can still complete Designer requests with less progress and usage information. Updating retains your private profiles and ChatGPT sign-in.
+Version 1.0.3 sets Designer to GPT-6 Astra at Medium reasoning with an explicit 872,000-token model context, using your ChatGPT Codex subscription. Request progress and token counts introduced in 1.0.2 remain available. Counts appear when Codex reports usage at the end of a turn; unreported counts remain unknown. Updating retains your private profiles and ChatGPT sign-in.
 
-1. On the Linux computer running the helper, open **Connect Codex** in either app and download **BLAI Helper 1.0.2** into Downloads. The saved filename is `blai-helper-1.0.2.tar.gz`; if the browser adds a suffix, use that actual filename in the command below.
+1. On the Linux computer running the helper, open **Connect Codex** in Designer and download **BLAI Helper 1.0.3** into Downloads. The saved filename is `blai-helper-1.0.3.tar.gz`; if the browser adds a suffix, use that actual filename in the command below.
 2. Run these commands in order. Stop if any command reports an error. Existing tool profiles and the ChatGPT sign-in are reused, so no settings download or `add` command is needed.
 
 ```sh
 blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -31,20 +39,20 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status
 ```
 
-The version command should print `BLAI Helper 1.0.2`. Installation restarts the shared service for all configured tools and updates the launcher to this new directory. **Keep the new extracted directory and its installed dependencies in place.** Keep the old release until the new helper connects. Then try a request in each app to check that Codex can complete work. If the new service cannot connect, installation restores the previous service configuration and reports the failure.
+The version command should print `BLAI Helper 1.0.3`. Installation restarts the shared service for all configured tools and updates the launcher to this new directory. **Keep the new extracted directory and its installed dependencies in place.** Keep the old release until the new helper connects. Then try a request in each app to check that Codex can complete work. If the new service cannot connect, installation restores the previous service configuration and reports the failure.
 
 Use these update instructions for an existing `blai-helper.service`. Moving from a standalone Writer or Designer helper requires importing its settings first and following the initial migration instructions below.
 
 ## First installation
 
 1. Open **Connect Codex** in Designer on your Linux computer.
-2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper-1.0.2.tar.gz` and `blai-designer-helper.json`.
+2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper-1.0.3.tar.gz` and `blai-designer-helper.json`.
 3. Stop any older helper running in a terminal with **Ctrl+C**. The installer handles known background services during migration.
 4. Open a terminal and run these commands in order. Stop if any command reports an error.
 
 ```sh
 blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
@@ -102,7 +110,7 @@ The manager's source, update instructions, and adapter contract live in [BLAI/he
 
 The private settings download at `/api/helper/setup` requires the signed-in owner. The Worker must have `DESIGNER_OWNER_EMAIL`, `DESIGNER_BRIDGE_SECRET`, `DESIGNER_ACCESS_CLIENT_ID`, and `DESIGNER_ACCESS_CLIENT_SECRET` configured as described in the repository README. Use a Designer-specific Cloudflare Access service token and Service Auth policy. Keep browser access restricted to the allowed Google identity. Do not reuse Writer's bridge secret or put credentials in browser code.
 
-The shared archive contains source and locked dependency manifests only, with no account files or service credentials. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-product-designer` checkouts beside each other, then use `npm run build:release`. This builds the app and puts `blai-helper.tar.gz` in `dist/client/`. `npm run deploy` uses this release build automatically. Each application serves the same manager package. A plain `npm run build` removes generated archives, so use `build:release` for the final production build.
+The shared archive contains source and locked dependency manifests only, with no account files or service credentials. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-product-designer` checkouts beside each other, then use `npm run build:release`. This builds the app and puts `blai-helper.tar.gz` in `dist/client/`. `npm run deploy` uses this release build automatically. Each application can serve a packaged manager release. Use the Designer download for version 1.0.3. A plain `npm run build` removes generated archives, so use `build:release` for the final production build.
 
 The standalone adapter is still available for development:
 

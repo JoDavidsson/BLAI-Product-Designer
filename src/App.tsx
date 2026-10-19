@@ -1840,15 +1840,20 @@ function Connections({
               <p>
                 Save downloads to Downloads on your Linux computer. To update an existing manager,
                 download BLAI Helper only. Designer settings are needed when adding Designer for the
-                first time and contain private connection credentials. Version 1.0.2 adds request
-                stages, helper check-ins, and token usage when Codex reports it.
+                first time and contain private connection credentials.
+              </p>
+              <p>
+                Version 1.0.3 runs Designer on GPT-6 Astra at Medium reasoning through your ChatGPT
+                Codex subscription, with an 872,000-token model context—the current published
+                maximum in Codex. Project input limits still apply. Install this update on the Linux
+                computer running your helper to use these settings.
               </p>
               <a
                 className="btn outlined"
                 href="/blai-helper.tar.gz"
-                download="blai-helper-1.0.2.tar.gz"
+                download="blai-helper-1.0.3.tar.gz"
               >
-                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.2
+                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.3
               </a>{' '}
               <button
                 className="btn outlined"
@@ -1870,15 +1875,15 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
-                <summary>Update BLAI Helper to 1.0.2</summary>
+                <summary>Update BLAI Helper to 1.0.3</summary>
                 <p>
-                  Download BLAI Helper 1.0.2 above, then run these commands in order on the Linux
+                  Download BLAI Helper 1.0.3 above, then run these commands in order on the Linux
                   computer running your helper. Stop if a command reports an error. Your existing
                   profiles and ChatGPT sign-in are reused; no settings download is needed.
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -1887,7 +1892,7 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status`}</code>
                 </pre>
                 <p>
-                  The version command should print <code>BLAI Helper 1.0.2</code>. Installation
+                  The version command should print <code>BLAI Helper 1.0.3</code>. Installation
                   restarts the service for all configured tools. Keep the new extracted directory
                   and its dependencies in place; the service runs from there. Keep the old directory
                   until the new helper connects.
@@ -1901,7 +1906,7 @@ node bin/blai-helper.mjs install
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"

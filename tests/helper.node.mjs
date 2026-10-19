@@ -283,7 +283,12 @@ test('runner disables executable tools, protects credentials, returns data and r
             assert.ok(args.includes('--ignore-rules'));
             assert.ok(args.includes('--ephemeral'));
             assert.ok(args.includes('read-only'));
+            assert.equal(args[args.indexOf('--model') + 1], 'gpt-6-astra');
             assert.ok(args.includes('forced_login_method="chatgpt"'));
+            assert.ok(args.includes('model_provider="openai"'));
+            assert.ok(args.includes('model_context_window=872000'));
+            assert.ok(!args.some((arg) => arg.startsWith('model_auto_compact_token_limit=')));
+            assert.ok(args.includes('model_reasoning_effort="medium"'));
             assert.ok(args.includes('features.shell_tool=false'));
             assert.ok(args.includes('features.image_generation=false'));
             assert.ok(args.includes('features.plugins=false'));
@@ -301,6 +306,9 @@ test('runner disables executable tools, protects credentials, returns data and r
       HTTPS_PROXY: 'proxy',
       SSL_CERT_FILE: '/ca',
       OPENAI_API_KEY: 'secret',
+      AZURE_OPENAI_API_KEY: 'secret',
+      ANTHROPIC_API_KEY: 'secret',
+      CODEX_API_KEY: 'secret',
       DESIGNER_BRIDGE_SECRET: 'secret',
     });
     assert.deepEqual(env, { HOME: '/private', HTTPS_PROXY: 'proxy', SSL_CERT_FILE: '/ca' });
@@ -355,7 +363,19 @@ for (const kind of CAPABILITIES) {
             { type: 'turn.completed', usage: {} },
           ],
           {
-            onSpawn(_command, _args, _options, child) {
+            onSpawn(_command, args, options, child) {
+              assert.equal(args.filter((arg) => arg === '--model').length, 1);
+              assert.equal(args[args.indexOf('--model') + 1], 'gpt-6-astra');
+              assert.ok(args.includes('model_reasoning_effort="medium"'));
+              assert.ok(args.includes('model_provider="openai"'));
+              assert.ok(args.includes('model_context_window=872000'));
+              assert.ok(!args.some((arg) => arg.startsWith('model_auto_compact_token_limit=')));
+              assert.ok(args.includes('forced_login_method="chatgpt"'));
+              assert.ok(args.includes('--ignore-user-config'));
+              assert.equal(options.env.OPENAI_API_KEY, undefined);
+              assert.equal(options.env.AZURE_OPENAI_API_KEY, undefined);
+              assert.equal(options.env.CODEX_API_KEY, undefined);
+              assert.equal(options.env.DESIGNER_BRIDGE_SECRET, undefined);
               const originalKill = child.kill;
               child.kill = (...args) => {
                 killed = true;

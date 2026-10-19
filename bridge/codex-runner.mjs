@@ -8,6 +8,8 @@ import { outputSchema, usageFromCodex, validateJob, validateResult } from './sch
 // project instructions, external tools, hooks, and background agents.
 export const codexSettings = Object.freeze([
   'forced_login_method="chatgpt"',
+  'model_provider="openai"',
+  'model_context_window=872000',
   'approval_policy="never"',
   'web_search="disabled"',
   'features.shell_tool=false',
@@ -120,6 +122,8 @@ export async function runCodex(
     await writeFile(schemaPath, JSON.stringify(outputSchema), { mode: 0o600 });
     const args = [
       'exec',
+      '--model',
+      'gpt-6-astra',
       '--ignore-user-config',
       '--ignore-rules',
       '--ephemeral',
