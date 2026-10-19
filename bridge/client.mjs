@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { bridgeHeaders, validateConfig } from './config.mjs';
 import {
   CAPABILITIES,
+  CANVAS_CAPABILITY,
   PROTOCOL_VERSION,
   PROGRESS_STAGES,
+  jobNeedsCanvas,
   validateJob,
   validateTelemetry,
 } from './schema.mjs';
@@ -28,6 +30,7 @@ export function createClient(
   )
     throw new Error('protocol');
   let extensions = true;
+  let canvasSupported = false;
   async function request(action, fields = {}, signal) {
     signal?.throwIfAborted();
     const response = await fetcher(new URL('/api/codex', config.site), {
@@ -69,24 +72,36 @@ export function createClient(
     const legacy = { ...fields };
     delete legacy.helperVersion;
     delete legacy.telemetry;
-    const optional = Object.hasOwn(fields, 'helperVersion') || Object.hasOwn(fields, 'telemetry');
+    if (Array.isArray(legacy.capabilities))
+      legacy.capabilities = legacy.capabilities.filter(
+        (capability) => capability !== CANVAS_CAPABILITY,
+      );
+    const optional =
+      Object.hasOwn(fields, 'helperVersion') ||
+      Object.hasOwn(fields, 'telemetry') ||
+      fields.capabilities?.includes(CANVAS_CAPABILITY);
     try {
       return await request(action, extensions ? fields : legacy, signal);
     } catch (error) {
-      // Older protocol-1 Workers reject unknown optional fields before mutation.
-      // Retry once without them, and keep this connection in legacy mode.
-      if (!extensions || !optional || error.status !== 400) throw error;
+      // Negotiate compatibility only when claiming work. A rejected result or
+      // telemetry update says nothing about server capabilities and must not
+      // disable a previously acknowledged canvas connection.
+      if (action !== 'claim' || !extensions || !optional || error.status !== 400) throw error;
       extensions = false;
+      canvasSupported = false;
       return request(action, legacy, signal);
     }
   }
   return {
     workerId,
+    get canvasSupported() {
+      return canvasSupported;
+    },
     async claim({ signal } = {}) {
       const state = await compatibleRequest(
         'claim',
         {
-          capabilities: [...CAPABILITIES],
+          capabilities: [...CAPABILITIES, CANVAS_CAPABILITY],
           ...(helperVersion ? { helperVersion } : {}),
         },
         signal,
@@ -95,10 +110,16 @@ export function createClient(
         !state ||
         state.protocolVersion !== PROTOCOL_VERSION ||
         !Object.hasOwn(state, 'job') ||
-        Object.keys(state).some((key) => !['protocolVersion', 'job'].includes(key))
+        Object.keys(state).some(
+          (key) => !['protocolVersion', 'job', 'canvasVersion'].includes(key),
+        ) ||
+        (state.canvasVersion !== undefined && state.canvasVersion !== 1)
       )
         throw new Error('protocol');
-      return state.job === null ? null : validateJob(state.job);
+      canvasSupported = extensions && state.canvasVersion === 1;
+      const job = state.job === null ? null : validateJob(state.job);
+      if (job && !canvasSupported && jobNeedsCanvas(job)) throw new Error('protocol');
+      return job;
     },
     async heartbeat(job, { signal, telemetry } = {}) {
       const state = await compatibleRequest(
@@ -194,7 +215,13 @@ export async function processJob(
     try {
       if (control.signal.aborted) return 'cancelled';
       outcome = {
-        result: await run(job, { workDir, command, signal: control.signal, onTelemetry }),
+        result: await run(job, {
+          workDir,
+          command,
+          signal: control.signal,
+          onTelemetry,
+          canvas: client.canvasSupported === true,
+        }),
       };
     } catch (error) {
       if (!control.signal.aborted)

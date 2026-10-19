@@ -29,6 +29,10 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
+  Circle,
+  Hand,
+  Pencil,
+  Upload,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -67,6 +71,7 @@ import {
   uid,
   type Annotation,
   type AnnotationTarget,
+  type BoardAsset,
   type DesignTokens,
   type JobKind,
   type NodeType,
@@ -75,6 +80,7 @@ import {
   type ScreenState,
   type WireNode,
 } from '../../shared/model';
+import { projectSchema } from '../../shared/validation';
 import AnnotationPanel from './AnnotationPanel';
 import WireframeCommentMargin, {
   COMMENT_MARGIN_GAP,
@@ -88,7 +94,27 @@ import {
   reparentNode,
   wireframeLimitError,
 } from '../lib/wireframe-tree';
+import FreeformCanvas, { type CanvasTool } from './FreeformCanvas';
+import CanvasInspector from './CanvasInspector';
+import CanvasLayers from './CanvasLayers';
+import {
+  defaultFrame,
+  frameFor,
+  sceneIndex,
+  rootSelection,
+  resizeNode,
+  moveNodes,
+  groupNodes,
+  ungroupNodes,
+  reparentNodes,
+  alignNodes,
+  distributeNodes,
+  reorderNodes,
+  reflowContainer,
+  reflowAutoLayouts,
+} from '../lib/freeform-geometry';
 import './wireframe.css';
+import './canvas-workspace.css';
 
 interface Props {
   project: Project;
@@ -96,6 +122,14 @@ interface Props {
   onToast: (message: string) => void;
   onGenerate: (kind: JobKind, instruction: string, screenId?: string) => void;
   helperOnline: boolean;
+  editingEpoch?: number;
+  onImageAdded?: (
+    asset: BoardAsset,
+    projectId: string,
+    screenId: string,
+    node: WireNode,
+    expectedEpoch: number,
+  ) => boolean;
   /** Open a source from the product overview without changing project content. */
   focusTarget?: { screenId: string; nodeId?: string; requestId: number };
 }
@@ -418,13 +452,45 @@ export default function WireframeWorkspace({
   onGenerate,
   helperOnline,
   focusTarget,
+  editingEpoch = 0,
+  onImageAdded,
 }: Props) {
   const [screenId, setScreenId] = useState(project.screens[0]?.id ?? '');
   const [selectedId, setSelectedId] = useState<string>();
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [tool, setTool] = useState<CanvasTool>('select');
+  const [canvasClipboard, setCanvasClipboard] = useState<WireNode[]>([]);
+  const [imagesOpen, setImagesOpen] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const imageDialog = useRef<HTMLDialogElement>(null);
+  const projectRef = useRef(project);
+  const epochRef = useRef(editingEpoch);
+  const mounted = useRef(true);
+  const uploadController = useRef<AbortController | null>(null);
+  projectRef.current = project;
+  epochRef.current = editingEpoch;
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      uploadController.current?.abort();
+    };
+  }, []);
+  useEffect(() => {
+    uploadController.current?.abort();
+    setImagesOpen(false);
+    setImageBusy(false);
+  }, [project.id]);
+  useEffect(() => {
+    if (imagesOpen) imageDialog.current?.showModal();
+    else imageDialog.current?.close();
+  }, [imagesOpen]);
   const [library, setLibrary] = useState(false);
   const [librarySearch, setLibrarySearch] = useState('');
   const [preview, setPreview] = useState(false);
   const [zoom, setZoom] = useState(0.8);
+  const [fitRequest, setFitRequest] = useState(0);
   const [commentMode, setCommentMode] = useState(false);
   const [inspector, setInspector] = useState<'properties' | 'comments'>('properties');
   const [commentTarget, setCommentTarget] = useState<AnnotationTarget>();
@@ -450,7 +516,8 @@ export default function WireframeWorkspace({
   const screen = project.screens.find((item) => item.id === screenId) ?? project.screens[0];
   const selected = screen && selectedId ? findNode(screen.nodes, selectedId) : undefined;
   const parentId = selected && screen ? (nodeParent(screen.nodes, selected.id) ?? '') : '';
-  const frameWidth = screen?.platform === 'mobile' ? 375 : 900;
+  const freeform = !!screen?.canvas;
+  const frameWidth = screen?.canvas?.width ?? (screen?.platform === 'mobile' ? 375 : 900);
   const screenComments = project.comments.filter(
     (comment) => comment.target.screenId === screen?.id,
   );
@@ -469,6 +536,8 @@ export default function WireframeWorkspace({
     if (previousScreenId.current === screenId) return;
     previousScreenId.current = screenId;
     setSelectedId(undefined);
+    setSelectedIds([]);
+    setTool('select');
     setCommentTarget(undefined);
     setSelectedComment(undefined);
   }, [screenId]);
@@ -498,6 +567,7 @@ export default function WireframeWorkspace({
         : undefined;
     pendingNodeFocus.current = nodeId;
     setSelectedId(nodeId);
+    setSelectedIds(nodeId ? [nodeId] : []);
     if (!nodeId) viewport.current?.scrollTo({ top: 0, left: 0 });
   }, [focusTarget, project.screens, screenId]);
   useEffect(() => {
@@ -513,12 +583,35 @@ export default function WireframeWorkspace({
   useEffect(() => {
     const element = viewport.current;
     if (!element) return;
-    const observer = new ResizeObserver(() =>
-      setZoom(Math.min(1, Math.max(0.25, (element.clientWidth - 96 - commentSpace) / frameWidth))),
-    );
+    const observer = new ResizeObserver(() => fitCanvas());
     observer.observe(element);
     return () => observer.disconnect();
-  }, [frameWidth, preview, commentSpace]);
+  }, [frameWidth, preview, commentSpace, freeform, screen?.id]);
+  useEffect(() => {
+    if (!freeform || !fitRequest) return;
+    const task = requestAnimationFrame(() => {
+      const container = viewport.current;
+      const frame = artboard.current;
+      if (!container || !frame) return;
+      // Source links focus their target layer; automatic fitting must keep that target visible.
+      const focusedLayer =
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement.dataset.nodeId &&
+        frame.contains(document.activeElement)
+          ? document.activeElement
+          : undefined;
+      const viewportBounds = container.getBoundingClientRect();
+      const frameBounds = frame.getBoundingClientRect();
+      const fittedComments = container.clientWidth >= 720 ? commentSpace : 0;
+      const left = Math.max(24, (container.clientWidth - frameBounds.width - fittedComments) / 2);
+      container.scrollTo({
+        left: container.scrollLeft + frameBounds.left - viewportBounds.left - left,
+        top: container.scrollTop + frameBounds.top - viewportBounds.top - 48,
+      });
+      focusedLayer?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+    return () => cancelAnimationFrame(task);
+  }, [fitRequest]);
   useEffect(() => {
     if (!aiOpen) return;
     aiDialog.current?.querySelector('textarea')?.focus();
@@ -556,11 +649,49 @@ export default function WireframeWorkspace({
     }
     if (target.closest('input, textarea, select, [contenteditable="true"]')) return;
     if (event.key === 'Escape') {
+      setSelectedIds([]);
+      setTool('select');
       setSelectedId(undefined);
       setCommentMode(false);
       return;
     }
     if (preview || !target.closest('.wf-canvas-scroll, .wf-layer-list')) return;
+    if (
+      screen?.canvas &&
+      target.closest('.wf-layer-list') &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.altKey &&
+      ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)
+    ) {
+      event.preventDefault();
+      const distance = event.shiftKey ? 10 : 1;
+      const dx = event.key === 'ArrowLeft' ? -distance : event.key === 'ArrowRight' ? distance : 0;
+      const dy = event.key === 'ArrowUp' ? -distance : event.key === 'ArrowDown' ? distance : 0;
+      if (rootSelection(screen.nodes, selectedIds, { movable: true }).length)
+        updateScreen({ nodes: moveNodes(screen.nodes, selectedIds, dx, dy) });
+      return;
+    }
+    if (
+      freeform &&
+      (event.ctrlKey || event.metaKey) &&
+      !event.altKey &&
+      event.key.toLowerCase() === 'g'
+    ) {
+      event.preventDefault();
+      if (event.shiftKey) ungroupCanvas();
+      else groupCanvas();
+      return;
+    }
+    if (freeform && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      selectCanvas(
+        [...sceneIndex(screen!.nodes).values()]
+          .filter((entry) => !entry.locked && !entry.hidden)
+          .map((entry) => entry.node.id),
+      );
+      return;
+    }
     const command = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
     if (command && event.key.toLowerCase() === 'd' && selected) {
       event.preventDefault();
@@ -573,7 +704,11 @@ export default function WireframeWorkspace({
     ) {
       event.preventDefault();
       copySelected();
-    } else if (command && event.key.toLowerCase() === 'v' && clipboard) {
+    } else if (
+      command &&
+      event.key.toLowerCase() === 'v' &&
+      (clipboard || canvasClipboard.length)
+    ) {
       event.preventDefault();
       pasteComponent();
     } else if (
@@ -594,12 +729,23 @@ export default function WireframeWorkspace({
       onToast(error);
       return false;
     }
-    onChange({ ...project, screens });
+    const candidate = { ...project, screens };
+    const validation = projectSchema.safeParse(candidate);
+    if (!validation.success) {
+      const issue = validation.error.issues[0];
+      onToast(
+        `This edit could not be applied: ${issue.message}. Check the layer's size, position, and image selection.`,
+      );
+      return false;
+    }
+    onChange(candidate);
     return true;
   }
 
   function updateScreen(changes: Partial<Screen>) {
     if (!screen) return false;
+    if ((screen.canvas || changes.canvas) && changes.nodes)
+      changes = { ...changes, nodes: reflowAutoLayouts(changes.nodes) };
     return changeScreens(
       project.screens.map((item) => (item.id === screen.id ? { ...item, ...changes } : item)),
     );
@@ -611,6 +757,7 @@ export default function WireframeWorkspace({
       });
   }
   function selectScreen(id: string) {
+    setSelectedIds([]);
     setScreenId(id);
     setSelectedId(undefined);
     setCommentTarget(undefined);
@@ -624,7 +771,11 @@ export default function WireframeWorkspace({
       platform,
       state: 'default',
       description: '',
-      nodes: starterNodes('Untitled screen'),
+      nodes: [],
+      canvas: {
+        width: platform === 'mobile' ? 375 : 900,
+        height: platform === 'mobile' ? 812 : 640,
+      },
     };
     if (!changeScreens([...project.screens, next])) return;
     selectScreen(next.id);
@@ -674,7 +825,12 @@ export default function WireframeWorkspace({
                 : 'Continue',
           ),
         );
+      if (next.canvas) {
+        prepareCanvasNode(stateCard, 24, 100);
+        stateCard.frame!.width = Math.max(100, next.canvas.width - 48);
+      }
       next.nodes = [...next.nodes.filter((node) => node.type === 'nav'), stateCard];
+      if (next.canvas) next.nodes = reflowAutoLayouts(next.nodes);
     }
     if (!changeScreens([...project.screens, next])) return;
     selectScreen(next.id);
@@ -697,6 +853,11 @@ export default function WireframeWorkspace({
     onToast('Screen deleted');
   }
   function insertNode(node: WireNode) {
+    if (screen?.canvas) {
+      prepareCanvasNode(node, 40 + selectedIds.length * 12, 40 + selectedIds.length * 12);
+      if (updateScreen({ nodes: [...screen.nodes, node] })) selectCanvas([node.id]);
+      return;
+    }
     if (!screen) {
       onToast('Add a screen first');
       return;
@@ -715,6 +876,10 @@ export default function WireframeWorkspace({
     setInspector('properties');
   }
   function addComponent(type: NodeType) {
+    if (freeform && type === 'image') {
+      setImagesOpen(true);
+      return;
+    }
     const node = createNode(type);
     if (type === 'card')
       node.children = [
@@ -724,6 +889,26 @@ export default function WireframeWorkspace({
     insertNode(node);
   }
   function deleteSelected() {
+    if (screen?.canvas) {
+      const ids = rootSelection(screen.nodes, selectedIds, { editable: true });
+      if (!ids.length) return;
+      const nodes = reflowAutoLayouts(
+        ids.reduce((nodes, id) => removeNode(nodes, id), screen.nodes),
+      );
+      onChange(
+        reconcileReferences(
+          {
+            ...project,
+            screens: project.screens.map((item) =>
+              item.id === screen.id ? { ...item, nodes } : item,
+            ),
+          },
+          project,
+        ),
+      );
+      selectCanvas([]);
+      return;
+    }
     if (!screen || !selected) return;
     const remaining = removeNode(screen.nodes, selected.id);
     onChange(
@@ -741,6 +926,21 @@ export default function WireframeWorkspace({
     onToast('Component deleted');
   }
   function duplicateSelected() {
+    if (screen?.canvas) {
+      const nodes = structuredClone(screen.nodes);
+      const ids: string[] = [];
+      for (const id of rootSelection(screen.nodes, selectedIds, { editable: true })) {
+        const source = findNode(nodes, id),
+          list = containingList(nodes, id);
+        if (!source || !list) continue;
+        const copy = cloneWireNode(source);
+        copy.frame = { ...frameFor(copy), x: frameFor(copy).x + 24, y: frameFor(copy).y + 24 };
+        list.splice(list.findIndex((node) => node.id === id) + 1, 0, copy);
+        ids.push(copy.id);
+      }
+      if (ids.length && updateScreen({ nodes })) selectCanvas(ids);
+      return;
+    }
     if (!screen || !selected) return;
     const nodes = structuredClone(screen.nodes);
     const list = containingList(nodes, selected.id);
@@ -751,11 +951,44 @@ export default function WireframeWorkspace({
     setSelectedId(copy.id);
   }
   function copySelected() {
+    if (screen?.canvas) {
+      // Flatten only selection roots to the screen, preserving their world transforms.
+      const ids = rootSelection(screen.nodes, selectedIds);
+      if (!ids.length) return;
+      const index = sceneIndex(screen.nodes);
+      const flattened = ids.some((id) => index.get(id)?.parentId)
+        ? reparentNodes(screen.nodes, ids, '')
+        : screen.nodes;
+      if (!flattened) {
+        onToast(
+          'These layers are too far outside the canvas to copy at their current positions. Move them closer to the frame first.',
+        );
+        return;
+      }
+      setCanvasClipboard(
+        ids.flatMap((id) => {
+          const node = findNode(flattened, id);
+          return node ? [structuredClone(node)] : [];
+        }),
+      );
+      onToast('Layers copied. Paste into a freeform screen.');
+      return;
+    }
     if (!selected) return;
     setClipboard(structuredClone(selected));
     onToast(`Copied “${selected.name}”. Paste it into this screen or another screen.`);
   }
   function pasteComponent() {
+    if (screen?.canvas && canvasClipboard.length) {
+      const copies = canvasClipboard.map((node) => {
+        const copy = cloneWireNode(node);
+        copy.frame = { ...frameFor(copy), x: frameFor(copy).x + 24, y: frameFor(copy).y + 24 };
+        return copy;
+      });
+      if (updateScreen({ nodes: [...screen.nodes, ...copies] }))
+        selectCanvas(copies.map((node) => node.id));
+      return;
+    }
     if (clipboard) insertNode(cloneWireNode(clipboard));
   }
   function changeParent(nextParent: string) {
@@ -810,16 +1043,218 @@ export default function WireframeWorkspace({
   function selectComment(comment: Annotation) {
     setSelectedComment(comment);
     setSelectedId(comment.target.nodeId);
+    setSelectedIds(comment.target.nodeId ? [comment.target.nodeId] : []);
     setCommentTarget(undefined);
     setInspector('comments');
   }
   function fitCanvas() {
     const width = viewport.current?.clientWidth ?? 1000;
-    setZoom(Math.min(1, Math.max(0.25, (width - 100 - commentSpace) / frameWidth)));
+    const fittedComments = freeform && width < 720 ? 0 : commentSpace;
+    setZoom(
+      Math.min(1, Math.max(freeform ? 0.05 : 0.25, (width - 96 - fittedComments) / frameWidth)),
+    );
+    if (freeform) setFitRequest((value) => value + 1);
   }
   function navigate(id: string) {
     if (project.screens.some((item) => item.id === id)) selectScreen(id);
     else onToast('This destination screen is no longer available.');
+  }
+
+  function selectCanvas(ids: string[]) {
+    setSelectedIds(ids);
+    setSelectedId(ids[0]);
+    setInspector('properties');
+  }
+  function prepareCanvasNode(node: WireNode, x = 0, y = 0) {
+    node.frame ??= defaultFrame(node.type, x, y);
+    if (node.children.length) {
+      node.layout ??= node.type === 'row' ? 'row' : 'column';
+      node.children.forEach((child, index) => prepareCanvasNode(child, 16, 16 + index * 96));
+    }
+  }
+  function changeCanvasNode(id: string, changes: Partial<WireNode>) {
+    if (!screen) return;
+    updateScreen({ nodes: mapNode(screen.nodes, id, (node) => ({ ...node, ...changes })) });
+  }
+  function groupCanvas() {
+    if (!screen) return;
+    const result = groupNodes(screen.nodes, selectedIds);
+    if (!result) {
+      onToast('Select at least two unlocked layers with the same parent to group.');
+      return;
+    }
+    if (updateScreen({ nodes: result.nodes })) selectCanvas([result.groupId]);
+  }
+  function ungroupCanvas() {
+    if (!screen) return;
+    const ids = selectedIds.flatMap(
+      (id) => findNode(screen.nodes, id)?.children.map((child) => child.id) ?? [],
+    );
+    if (updateScreen({ nodes: ungroupNodes(screen.nodes, selectedIds) })) selectCanvas(ids);
+  }
+  function convertToCanvas() {
+    if (!screen || screen.canvas || !artboard.current) return;
+    const rootRect = artboard.current.getBoundingClientRect();
+    const elements = new Map(
+      [...artboard.current.querySelectorAll<HTMLElement>('[data-node-id]')].map((element) => [
+        element.dataset.nodeId!,
+        element,
+      ]),
+    );
+    let missing = false;
+    const convert = (nodes: WireNode[], parentRect: DOMRect): WireNode[] =>
+      nodes.map((node) => {
+        const element = elements.get(node.id);
+        const rect = element?.getBoundingClientRect();
+        if (!rect || !element) {
+          missing = true;
+          return node;
+        }
+        const computed = getComputedStyle(element);
+        const visual = element.querySelector<HTMLElement>(
+          ':scope > h2, :scope > p, :scope > button:not(.wf-comment-pin), :scope > .wf-fake-input, :scope > .wf-badge-content',
+        );
+        const textStyle = visual ? getComputedStyle(visual) : computed;
+        const color = (value: string): string | undefined => {
+          const match = value.match(/^rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)(?:[, /]+([.\d]+))?\)$/);
+          if (!match || (match[4] !== undefined && Number(match[4]) === 0)) return undefined;
+          return (
+            '#' +
+            match
+              .slice(1, 4)
+              .map((part) => Number(part).toString(16).padStart(2, '0'))
+              .join('')
+          );
+        };
+        const background = color(computed.backgroundColor) ?? color(textStyle.backgroundColor);
+        const borderStyle = parseFloat(computed.borderWidth) > 0 ? computed : textStyle;
+        const stroke =
+          parseFloat(borderStyle.borderWidth) > 0 ? color(borderStyle.borderColor) : undefined;
+        const weight = Number(textStyle.fontWeight) || 400;
+        const fontWeight = [400, 500, 600, 700].reduce((closest, candidate) =>
+          Math.abs(candidate - weight) < Math.abs(closest - weight) ? candidate : closest,
+        ) as 400 | 500 | 600 | 700;
+        return {
+          ...node,
+          style: {
+            ...node.style,
+            color: color(textStyle.color) ?? node.style.color,
+            fontSize: Math.max(8, Math.min(96, parseFloat(textStyle.fontSize) || 14)),
+            fontWeight,
+            ...(background ? { background } : {}),
+            ...(stroke
+              ? { stroke, strokeWidth: Math.min(32, parseFloat(borderStyle.borderWidth)) }
+              : {}),
+            radius: Math.min(
+              64,
+              parseFloat(computed.borderRadius) || parseFloat(textStyle.borderRadius) || 0,
+            ),
+            ...(!['group', 'section', 'row', 'column', 'card'].includes(node.type)
+              ? {
+                  padding: Math.min(
+                    100,
+                    (parseFloat(computed.paddingTop) || 0) +
+                      (visual ? parseFloat(textStyle.paddingTop) || 0 : 0),
+                  ),
+                }
+              : {}),
+            ...(visual && Number(textStyle.opacity) < 1
+              ? { opacity: Number(textStyle.opacity) }
+              : {}),
+          },
+          ...(['group', 'section', 'row', 'column', 'card'].includes(node.type)
+            ? { layout: 'free' as const }
+            : {}),
+          frame: {
+            x: (rect.left - parentRect.left) / zoom,
+            y: (rect.top - parentRect.top) / zoom,
+            width: Math.max(1, rect.width / zoom),
+            height: Math.max(1, rect.height / zoom),
+            rotation: 0,
+          },
+          children: convert(node.children, rect),
+        };
+      });
+    const nodes = convert(screen.nodes, rootRect);
+    if (missing || rootRect.height / zoom > 10000) {
+      onToast(
+        'This screen cannot be converted at its current size. Split it into smaller screens first.',
+      );
+      return;
+    }
+    if (
+      updateScreen({
+        canvas: { width: frameWidth, height: Math.max(100, Math.ceil(rootRect.height / zoom)) },
+        nodes,
+      })
+    ) {
+      selectCanvas(selectedId ? [selectedId] : []);
+      setTool('select');
+      onToast('Free positioning enabled. Undo returns this screen to its previous layout.');
+    }
+  }
+  function imageNode(asset: BoardAsset) {
+    const node = createNode('image', asset.title);
+    node.name = asset.title.slice(0, 160) || 'Image';
+    node.frame = defaultFrame('image', 40, 40);
+    node.image = { assetId: asset.id, fit: 'contain' };
+    return node;
+  }
+  async function uploadImage(file?: File) {
+    if (!file || imageBusy || !screen?.canvas) return;
+    if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type)) {
+      onToast('Choose a PNG, JPEG, WebP, or GIF image.');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      onToast('Images must be 10 MB or less.');
+      return;
+    }
+    if (project.assets.length >= 100) {
+      onToast('This project already has 100 images. Remove an unused image first.');
+      return;
+    }
+    const projectId = project.id,
+      destinationId = screen.id,
+      epoch = editingEpoch;
+    const controller = new AbortController();
+    uploadController.current = controller;
+    setImageBusy(true);
+    try {
+      const form = new FormData();
+      form.set('file', file);
+      form.set('kind', 'reference');
+      form.set('title', file.name.replace(/\.[^.]+$/, '').slice(0, 160));
+      const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/assets`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: form,
+        signal: controller.signal,
+      });
+      const data = (await response.json()) as { asset?: BoardAsset; error?: string };
+      if (!response.ok || !data.asset)
+        throw new Error(data.error || 'The image could not be uploaded.');
+      if (
+        !mounted.current ||
+        controller.signal.aborted ||
+        projectRef.current.id !== projectId ||
+        epochRef.current !== epoch
+      )
+        return;
+      const node = imageNode(data.asset);
+      if (!onImageAdded?.(data.asset, projectId, destinationId, node, epoch)) {
+        onToast('The screen changed during upload. Please add the image again.');
+        return;
+      }
+      selectCanvas([node.id]);
+      setImagesOpen(false);
+      setTool('select');
+    } catch (error) {
+      if (mounted.current && !controller.signal.aborted)
+        onToast(error instanceof Error ? error.message : 'The image could not be uploaded.');
+    } finally {
+      if (mounted.current && uploadController.current === controller) setImageBusy(false);
+    }
   }
 
   return (
@@ -922,9 +1357,11 @@ export default function WireframeWorkspace({
               <div className="wf-sidebar-tip">
                 <MousePointer2 size={15} />
                 <p>
-                  {selected && CONTAINERS.includes(selected.type)
-                    ? `New components go inside “${selected.name}”.`
-                    : 'Click a component to add it. Select a container to add inside it.'}
+                  {freeform
+                    ? 'Add a component to the canvas. Use Parent layer to place it inside a container.'
+                    : selected && CONTAINERS.includes(selected.type)
+                      ? `New components go inside “${selected.name}”.`
+                      : 'Click a component to add it. Select a container to add inside it.'}
                 </p>
               </div>
             </>
@@ -974,15 +1411,27 @@ export default function WireframeWorkspace({
                       LAYERS <span>{countNodes(screen.nodes)}</span>
                     </div>
                     <div className="wf-layer-list">
-                      <LayerList
-                        nodes={screen.nodes}
-                        selectedId={selectedId}
-                        onSelect={(id) => {
-                          setSelectedId(id);
-                          setInspector('properties');
-                          setPreview(false);
-                        }}
-                      />
+                      {screen.canvas ? (
+                        <CanvasLayers
+                          nodes={screen.nodes}
+                          selectedIds={selectedIds}
+                          onSelect={(ids) => {
+                            selectCanvas(ids);
+                            setPreview(false);
+                          }}
+                          onChange={changeCanvasNode}
+                        />
+                      ) : (
+                        <LayerList
+                          nodes={screen.nodes}
+                          selectedId={selectedId}
+                          onSelect={(id) => {
+                            setSelectedId(id);
+                            setInspector('properties');
+                            setPreview(false);
+                          }}
+                        />
+                      )}
                     </div>
                   </>
                 )}
@@ -1013,7 +1462,7 @@ export default function WireframeWorkspace({
                   <button
                     className="wf-icon-button"
                     onClick={pasteComponent}
-                    disabled={!clipboard || !screen}
+                    disabled={!(clipboard || canvasClipboard.length) || !screen}
                     title={
                       clipboard
                         ? `Paste “${clipboard.name}” (Ctrl/Cmd+V on canvas)`
@@ -1024,8 +1473,11 @@ export default function WireframeWorkspace({
                     <ClipboardPaste size={16} />
                   </button>
                   <button
-                    className={`wf-icon-button${!commentMode ? ' active' : ''}`}
-                    onClick={() => setCommentMode(false)}
+                    className={`wf-icon-button${(freeform ? tool === 'select' : !commentMode) ? ' active' : ''}`}
+                    onClick={() => {
+                      setCommentMode(false);
+                      setTool('select');
+                    }}
                     title="Select elements"
                     aria-label="Select elements"
                   >
@@ -1035,6 +1487,7 @@ export default function WireframeWorkspace({
                     className={`wf-icon-button${commentMode ? ' active' : ''}`}
                     onClick={() => {
                       setCommentMode(!commentMode);
+                      setTool(commentMode ? 'select' : 'comment');
                       setInspector('comments');
                     }}
                     disabled={!screen}
@@ -1056,10 +1509,62 @@ export default function WireframeWorkspace({
               </button>
             </div>
           </div>
+          {!preview &&
+            screen &&
+            (screen.canvas ? (
+              <div className="canvas-toolstrip" role="toolbar" aria-label="Canvas tools">
+                {(
+                  [
+                    { id: 'select', label: 'Select', icon: MousePointer2 },
+                    { id: 'hand', label: 'Pan', icon: Hand },
+                    { id: 'rectangle', label: 'Rectangle', icon: Square },
+                    { id: 'ellipse', label: 'Ellipse', icon: Circle },
+                    { id: 'line', label: 'Line', icon: Minus },
+                    { id: 'path', label: 'Freehand', icon: Pencil },
+                    { id: 'text', label: 'Text', icon: Type },
+                  ] as const
+                ).map((item) => (
+                  <button
+                    key={item.id}
+                    className={tool === item.id ? 'active' : ''}
+                    aria-label={`${item.label} tool`}
+                    aria-pressed={tool === item.id}
+                    title={item.label}
+                    onClick={() => {
+                      setTool(item.id);
+                      setCommentMode(false);
+                    }}
+                  >
+                    <item.icon size={16} />
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+                <button aria-label="Place image" onClick={() => setImagesOpen(true)}>
+                  <ImageIcon size={16} />
+                  <span>Image</span>
+                </button>
+                <span className="canvas-tool-label">
+                  Shift-click to select multiple · Space to pan
+                </span>
+              </div>
+            ) : (
+              <div className="canvas-convert-banner">
+                <span>This screen uses its original flow layout.</span>
+                <button className="wf-button" onClick={convertToCanvas}>
+                  Edit freely
+                </button>
+              </div>
+            ))}
           {commentMode && (
             <div className="wf-mode-banner">
               <MessageCircle size={14} /> Click an element or a point on the screen to leave a note.
-              <button onClick={() => setCommentMode(false)} aria-label="Cancel comment">
+              <button
+                onClick={() => {
+                  setCommentMode(false);
+                  setTool('select');
+                }}
+                aria-label="Cancel comment"
+              >
                 <X size={13} />
               </button>
             </div>
@@ -1078,8 +1583,11 @@ export default function WireframeWorkspace({
           >
             {screen ? (
               <div
-                className="wf-canvas-stage"
-                style={{ width: Math.max(frameWidth * zoom + 96 + commentSpace, 400) }}
+                className={`wf-canvas-stage${freeform ? ' canvas-spatial-stage' : ''}`}
+                style={{
+                  width: Math.max(frameWidth * zoom + (freeform ? 480 : 96) + commentSpace, 400),
+                  ...(screen.canvas ? { minHeight: screen.canvas.height * zoom + 480 } : {}),
+                }}
               >
                 <div className="wf-frame-caption" style={{ width: frameWidth * zoom }}>
                   <span>
@@ -1090,100 +1598,137 @@ export default function WireframeWorkspace({
                     )}
                     {screen.name}
                   </span>
-                  <span>{frameWidth} px</span>
+                  <span>
+                    {screen.canvas ? `${frameWidth} × ${screen.canvas.height}` : frameWidth} px
+                  </span>
                 </div>
                 <div className="wf-frame-and-comments" ref={commentFrame}>
                   <div className="wf-frame-sizer" style={{ width: frameWidth * zoom }}>
-                    <div
-                      ref={artboard}
-                      className={`wf-artboard${screen.platform === 'mobile' ? ' wf-mobile-artboard' : ''}${commentMode ? ' is-commenting' : ''}`}
-                      style={
-                        {
-                          width: frameWidth,
-                          zoom,
-                          background: project.design.surface,
-                          color: project.design.text,
-                          fontFamily:
-                            project.design.font === 'serif' ? 'Georgia, serif' : undefined,
-                          '--wf-accent': project.design.accent,
-                          '--wf-zoom': zoom,
-                          '--wf-radius': `${project.design.radius}px`,
-                        } as CSSProperties
-                      }
-                      onClick={(event) =>
-                        commentMode ? commentAt(undefined, event) : setSelectedId(undefined)
-                      }
-                    >
-                      {screen.platform === 'mobile' && (
-                        <div className="wf-phone-status">
-                          <span>9:41</span>
-                          <span className="wf-phone-island" />
-                          <span>● ▰</span>
-                        </div>
-                      )}
-                      {preview ? (
-                        <WireframeRenderer
-                          nodes={screen.nodes}
-                          design={project.design}
-                          preview
-                          onNavigate={navigate}
-                          onUnlinked={() =>
-                            onToast(
-                              'This button has no destination yet. Connect it in the editor’s Interaction settings.',
-                            )
-                          }
-                        />
-                      ) : (
-                        <DndContext
-                          sensors={sensors}
-                          collisionDetection={canvasCollision}
-                          onDragEnd={dragEnd}
-                        >
+                    {screen.canvas ? (
+                      <FreeformCanvas
+                        screen={screen}
+                        design={project.design}
+                        assets={project.assets}
+                        selectedIds={selectedIds}
+                        tool={tool}
+                        zoom={zoom}
+                        onSelection={selectCanvas}
+                        onCommit={(nodes) => updateScreen({ nodes })}
+                        onToolChange={(next) => {
+                          setTool(next);
+                          setCommentMode(next === 'comment');
+                        }}
+                        viewportRef={viewport}
+                        artboardRef={artboard}
+                        comments={visibleComments}
+                        selectedCommentId={selectedComment?.id}
+                        onCommentSelect={selectComment}
+                        onComment={(target) => {
+                          setCommentTarget(target);
+                          setSelectedComment(undefined);
+                          setInspector('comments');
+                          setTool('select');
+                          setCommentMode(false);
+                        }}
+                        preview={preview}
+                        onNavigate={navigate}
+                        onUnlinked={() =>
+                          onToast('Connect this button to a screen in its properties.')
+                        }
+                        onZoomChange={setZoom}
+                      />
+                    ) : (
+                      <div
+                        ref={artboard}
+                        className={`wf-artboard${screen.platform === 'mobile' ? ' wf-mobile-artboard' : ''}${commentMode ? ' is-commenting' : ''}`}
+                        style={
+                          {
+                            width: frameWidth,
+                            zoom,
+                            background: project.design.surface,
+                            color: project.design.text,
+                            fontFamily:
+                              project.design.font === 'serif' ? 'Georgia, serif' : undefined,
+                            '--wf-accent': project.design.accent,
+                            '--wf-zoom': zoom,
+                            '--wf-radius': `${project.design.radius}px`,
+                          } as CSSProperties
+                        }
+                        onClick={(event) =>
+                          commentMode ? commentAt(undefined, event) : setSelectedId(undefined)
+                        }
+                      >
+                        {screen.platform === 'mobile' && (
+                          <div className="wf-phone-status">
+                            <span>9:41</span>
+                            <span className="wf-phone-island" />
+                            <span>● ▰</span>
+                          </div>
+                        )}
+                        {preview ? (
                           <WireframeRenderer
                             nodes={screen.nodes}
                             design={project.design}
-                            selectedId={selectedId}
-                            onSelect={(node, event) => {
-                              if (commentMode) commentAt(node, event);
-                              else {
-                                setSelectedId(node.id);
-                                setInspector('properties');
-                              }
-                            }}
-                            comments={visibleComments}
-                            selectedCommentId={selectedComment?.id}
-                            onCommentSelect={selectComment}
-                            commentMode={commentMode}
+                            preview
+                            onNavigate={navigate}
+                            onUnlinked={() =>
+                              onToast(
+                                'This button has no destination yet. Connect it in the editor’s Interaction settings.',
+                              )
+                            }
                           />
-                        </DndContext>
-                      )}
-                      {screen.nodes.length === 0 && (
-                        <div className="wf-empty-artboard">
-                          <LayoutPanelTop size={32} strokeWidth={1} />
-                          <h3>A blank canvas. A good beginning.</h3>
-                          <p>Add components from the left to give this screen a shape.</p>
-                          <button
-                            className="wf-button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setLibrary(true);
-                            }}
+                        ) : (
+                          <DndContext
+                            sensors={sensors}
+                            collisionDetection={canvasCollision}
+                            onDragEnd={dragEnd}
                           >
-                            <Plus size={14} /> Browse components
-                          </button>
-                        </div>
-                      )}
-                      {!preview && (
-                        <WireframeCommentPins
-                          comments={visibleComments.filter(
-                            (comment) => comment.target.kind === 'screen',
-                          )}
-                          allComments={visibleComments}
-                          selectedId={selectedComment?.id}
-                          onSelect={selectComment}
-                        />
-                      )}
-                    </div>
+                            <WireframeRenderer
+                              nodes={screen.nodes}
+                              design={project.design}
+                              selectedId={selectedId}
+                              onSelect={(node, event) => {
+                                if (commentMode) commentAt(node, event);
+                                else {
+                                  setSelectedId(node.id);
+                                  setInspector('properties');
+                                }
+                              }}
+                              comments={visibleComments}
+                              selectedCommentId={selectedComment?.id}
+                              onCommentSelect={selectComment}
+                              commentMode={commentMode}
+                            />
+                          </DndContext>
+                        )}
+                        {screen.nodes.length === 0 && (
+                          <div className="wf-empty-artboard">
+                            <LayoutPanelTop size={32} strokeWidth={1} />
+                            <h3>A blank canvas. A good beginning.</h3>
+                            <p>Add components from the left to give this screen a shape.</p>
+                            <button
+                              className="wf-button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setLibrary(true);
+                              }}
+                            >
+                              <Plus size={14} /> Browse components
+                            </button>
+                          </div>
+                        )}
+                        {!preview && (
+                          <WireframeCommentPins
+                            comments={visibleComments.filter(
+                              (comment) => comment.target.kind === 'screen',
+                            )}
+                            allComments={visibleComments}
+                            selectedId={selectedComment?.id}
+                            onSelect={selectComment}
+                          />
+                        )}
+                      </div>
+                    )}
                   </div>
                   {!preview && visibleComments.length > 0 && (
                     <WireframeCommentMargin
@@ -1236,13 +1781,15 @@ export default function WireframeWorkspace({
           <div className="wf-canvas-bottom">
             <span>
               <span className="wf-status-dot" />
-              {preview ? 'Prototype preview' : 'Layout canvas'}
+              {preview ? 'Prototype preview' : freeform ? 'Freeform canvas' : 'Layout canvas'}
             </span>
             <div className="wf-zoom-controls">
               <button
                 aria-label="Zoom out"
                 onClick={() =>
-                  setZoom((value) => Math.max(0.25, Math.round((value - 0.1) * 100) / 100))
+                  setZoom((value) =>
+                    Math.max(freeform ? 0.05 : 0.25, Math.round((value - 0.1) * 100) / 100),
+                  )
                 }
               >
                 <Minus size={14} />
@@ -1253,7 +1800,9 @@ export default function WireframeWorkspace({
               <button
                 aria-label="Zoom in"
                 onClick={() =>
-                  setZoom((value) => Math.min(1.5, Math.round((value + 0.1) * 100) / 100))
+                  setZoom((value) =>
+                    Math.min(freeform ? 4 : 1.5, Math.round((value + 0.1) * 100) / 100),
+                  )
                 }
               >
                 <Plus size={14} />
@@ -1290,6 +1839,41 @@ export default function WireframeWorkspace({
                 onToast={onToast}
                 filter={screen ? { screenId: screen.id } : undefined}
                 selectedId={selectedComment?.id}
+              />
+            ) : screen?.canvas ? (
+              <CanvasInspector
+                screen={screen}
+                screens={project.screens}
+                design={project.design}
+                assets={project.assets.filter((asset) => !!asset.imageUrl)}
+                selectedIds={selectedIds}
+                onScreen={updateScreen}
+                onNode={changeCanvasNode}
+                onFrame={(id, changes) =>
+                  updateScreen({ nodes: resizeNode(screen.nodes, id, changes) })
+                }
+                onArrange={(action) =>
+                  updateScreen({ nodes: reorderNodes(screen.nodes, selectedIds, action) })
+                }
+                onAlign={(alignment) =>
+                  updateScreen({ nodes: alignNodes(screen.nodes, selectedIds, alignment) })
+                }
+                onDistribute={(axis) =>
+                  updateScreen({ nodes: distributeNodes(screen.nodes, selectedIds, axis) })
+                }
+                onGroup={groupCanvas}
+                onUngroup={ungroupCanvas}
+                onReparent={(parent) => {
+                  const nodes = reparentNodes(screen.nodes, selectedIds, parent);
+                  if (nodes) updateScreen({ nodes });
+                }}
+                onReflow={() =>
+                  selected && updateScreen({ nodes: reflowContainer(screen.nodes, selected.id) })
+                }
+                onDuplicate={duplicateSelected}
+                onDelete={deleteSelected}
+                onDuplicateScreen={duplicateScreen}
+                onDeleteScreen={deleteScreen}
               />
             ) : (
               <div className="wf-properties-scroll">
@@ -1717,6 +2301,65 @@ export default function WireframeWorkspace({
           </aside>
         )}
       </div>
+      <dialog
+        ref={imageDialog}
+        className="canvas-image-dialog"
+        aria-label="Place an image"
+        onCancel={() => setImagesOpen(false)}
+        onClick={(event) => {
+          if (event.target === event.currentTarget) setImagesOpen(false);
+        }}
+      >
+        <header>
+          <h2>Place an image</h2>
+          <button
+            className="wf-icon-button"
+            aria-label="Close image chooser"
+            onClick={() => setImagesOpen(false)}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <input
+          ref={imageInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          hidden
+          onChange={(event) => {
+            void uploadImage(event.target.files?.[0]);
+            event.target.value = '';
+          }}
+        />
+        <button
+          className="wf-button"
+          disabled={imageBusy || !onImageAdded}
+          onClick={() => imageInput.current?.click()}
+        >
+          <Upload size={16} />
+          {imageBusy ? 'Uploading…' : 'Upload an image'}
+        </button>
+        <p className="wf-field-help">
+          PNG, JPEG, WebP, or GIF, up to 10 MB. Or choose an image already in this project.
+        </p>
+        <div className="canvas-asset-grid">
+          {project.assets
+            .filter((asset) => !!asset.imageUrl)
+            .map((asset) => (
+              <button
+                key={asset.id}
+                disabled={imageBusy}
+                onClick={() => {
+                  insertNode(imageNode(asset));
+                  setImagesOpen(false);
+                  setTool('select');
+                }}
+              >
+                <img src={asset.imageUrl} alt="" />
+                <span>{asset.title}</span>
+              </button>
+            ))}
+        </div>
+      </dialog>
       {aiOpen && (
         <div
           className="wf-modal-backdrop"

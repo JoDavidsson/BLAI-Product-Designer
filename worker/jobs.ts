@@ -27,6 +27,14 @@ import { assertProjectSize, getProject, proposalToProject, saveProject } from '.
 const LEASE_MS = 45000;
 const ONLINE_MS = 35000;
 const MAX_RUNTIME_MS = 600000;
+export const CANVAS_CAPABILITY = 'canvas.v1';
+function needsCanvas(project: Project, kind: JobKind, screenId?: string | null): boolean {
+  return project.screens.some(
+    (screen) =>
+      screen.canvas &&
+      (kind === 'wireframe.generate' || (kind === 'wireframe.refine' && screen.id === screenId)),
+  );
+}
 type JobRow = {
   id: string;
   project_id: string;
@@ -149,6 +157,18 @@ export async function enqueueJob(
     (!input.screenId || !project.screens.some((s) => s.id === input.screenId))
   )
     throw new AppError(400, 'screen_required', 'Choose an existing screen to refine.');
+  if (
+    needsCanvas(project, input.kind, input.screenId) &&
+    !helpers.results.some((helper) => {
+      const capabilities: string[] = JSON.parse(helper.capabilities);
+      return capabilities.includes(input.kind) && capabilities.includes(CANVAS_CAPABILITY);
+    })
+  )
+    throw new AppError(
+      409,
+      'helper_update_required',
+      'Update BLAI Helper to version 1.1.0 or later and reconnect Designer before asking AI to change a freeform canvas. Your existing design is saved.',
+    );
   const context = JSON.stringify(project);
   if (context.length > 350000)
     throw new AppError(
@@ -313,7 +333,14 @@ export const bridgeSchema = z.discriminatedUnion('action', [
     .object({
       ...base,
       action: z.literal('claim'),
-      capabilities: z.array(jobKindSchema).min(1).max(5),
+      capabilities: z
+        .array(z.union([jobKindSchema, z.literal(CANVAS_CAPABILITY)]))
+        .min(1)
+        .max(6)
+        .refine(
+          (items) => items.some((item) => item !== CANVAS_CAPABILITY),
+          'Send a supported job kind.',
+        ),
       helperVersion: helperVersionSchema.optional(),
     })
     .strict(),
@@ -380,6 +407,15 @@ export function validateResultForJob(
       'A refinement must return exactly the requested screen with its original identifier.',
     );
   if (
+    needsCanvas(project, job.kind, job.screen_id) &&
+    result.screens?.some((screen) => !screen.canvas)
+  )
+    throw new AppError(
+      400,
+      'canvas_geometry_required',
+      'This proposal would remove freeform canvas geometry. Update BLAI Helper to version 1.1.0 or later and generate a new proposal.',
+    );
+  if (
     (job.kind === 'plan.assist' ||
       job.kind === 'plan.review' ||
       job.kind === 'moodboard.direction') &&
@@ -439,9 +475,11 @@ export async function bridgeOperation(
       )
       .run();
     const lease = uid('lease');
-    const placeholders = input.capabilities.map(() => '?').join(',');
+    const canvas = input.capabilities.includes(CANVAS_CAPABILITY);
+    const kinds = input.capabilities.filter((kind) => kind !== CANVAS_CAPABILITY);
+    const placeholders = kinds.map(() => '?').join(',');
     const row = await env.DB.prepare(
-      `UPDATE jobs SET status='running',worker_id=?,lease_token=?,lease_expires_at=?,started_at=?,helper_version=? WHERE id=(SELECT id FROM jobs WHERE owner=? AND status='queued' AND kind IN (${placeholders}) AND NOT EXISTS(SELECT 1 FROM jobs WHERE owner=? AND worker_id=? AND status='running') ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
+      `UPDATE jobs SET status='running',worker_id=?,lease_token=?,lease_expires_at=?,started_at=?,helper_version=? WHERE id=(SELECT id FROM jobs WHERE owner=? AND status='queued' AND kind IN (${placeholders}) AND (?=1 OR NOT EXISTS(SELECT 1 FROM json_each(jobs.context,'$.screens') AS screen WHERE json_extract(screen.value,'$.canvas') IS NOT NULL AND (jobs.kind='wireframe.generate' OR (jobs.kind='wireframe.refine' AND json_extract(screen.value,'$.id')=jobs.screen_id)))) AND NOT EXISTS(SELECT 1 FROM jobs WHERE owner=? AND worker_id=? AND status='running') ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
     )
       .bind(
         input.workerId,
@@ -450,13 +488,15 @@ export async function bridgeOperation(
         now,
         input.helperVersion ?? null,
         owner,
-        ...input.capabilities,
+        ...kinds,
+        canvas ? 1 : 0,
         owner,
         input.workerId,
       )
       .first<JobRow>();
     return {
       protocolVersion: PROTOCOL_VERSION,
+      ...(canvas ? { canvasVersion: 1 } : {}),
       job: row
         ? {
             id: row.id,

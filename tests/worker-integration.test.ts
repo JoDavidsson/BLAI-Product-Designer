@@ -4,15 +4,25 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { handleRequest } from '../worker/index';
-import { getProject, newProject } from '../worker/projects';
+import { getProject, newProject, saveProject } from '../worker/projects';
 import {
   JOB_KINDS,
+  createNode,
   type AIJob,
   type AIResult,
   type HelperStatus,
   type Project,
 } from '../shared/model';
-import { bridgeOperation, helperStatus, listJobs } from '../worker/jobs';
+import {
+  applyProposal,
+  bridgeOperation,
+  bridgeSchema,
+  CANVAS_CAPABILITY,
+  enqueueJob,
+  helperStatus,
+  listJobs,
+  listProposals,
+} from '../worker/jobs';
 import type { Env } from '../worker/types';
 
 let mf: Miniflare;
@@ -698,6 +708,166 @@ describe('Worker with real D1 and R2 bindings', () => {
     );
     expect(completed.usage).toBeUndefined();
     expect(completed.progressStage).toBeUndefined();
+  });
+  it('negotiates canvas jobs, isolates old helpers, and preserves geometry through review and apply', async () => {
+    for (const kind of ['wireframe.generate', 'wireframe.refine'] as const) {
+      const owner = `${kind}@canvas.test`;
+      let p = await newProject(env, owner, 'Canvas contract fixture');
+      p = await saveProject(
+        env,
+        owner,
+        p,
+        {
+          ...p,
+          assets: [
+            {
+              id: 'owned_photo',
+              title: 'Fixture image',
+              kind: 'reference',
+              imageUrl: '/sample/photo.png',
+              sourceUrl: '',
+              note: '',
+              createdAt: p.createdAt,
+            },
+          ],
+          screens: [
+            {
+              id: 'canvas_frame',
+              name: 'Image composition',
+              platform: 'mobile',
+              state: 'default',
+              description: '',
+              canvas: { width: 390, height: 844 },
+              nodes: [
+                {
+                  ...createNode('image'),
+                  id: 'image_layer',
+                  frame: { x: 20, y: 80, width: 350, height: 500, rotation: 5 },
+                  image: { assetId: 'owned_photo', fit: 'cover' },
+                },
+              ],
+            },
+          ],
+        },
+        p.revision,
+      );
+      const operate = (input: unknown) => bridgeOperation(env, owner, bridgeSchema.parse(input));
+      const claim = (workerId: string, canvas: boolean) =>
+        operate({
+          action: 'claim',
+          protocolVersion: 1,
+          workerId,
+          capabilities: [...JOB_KINDS, ...(canvas ? [CANVAS_CAPABILITY] : [])],
+        }) as Promise<{
+          protocolVersion: number;
+          canvasVersion?: number;
+          job: null | { id: string; leaseToken: string; context: Project };
+        }>;
+      expect(await claim('old_helper', false)).toEqual({ protocolVersion: 1, job: null });
+      const input = {
+        kind,
+        instruction: 'Preserve the image composition.',
+        ...(kind === 'wireframe.refine' ? { screenId: 'canvas_frame' } : {}),
+      };
+      await expect(enqueueJob(env, owner, p, input)).rejects.toMatchObject({
+        code: 'helper_update_required',
+      });
+      expect((await claim('new_helper', true)).canvasVersion).toBe(1);
+      expect((await helperStatus(env, owner)).capabilities).toContain(CANVAS_CAPABILITY);
+      const queued = await enqueueJob(env, owner, p, input);
+      const plan = await enqueueJob(env, owner, p, {
+        kind: 'plan.assist',
+        instruction: 'Review this plan.',
+      });
+      const oldClaim = await claim('old_helper', false);
+      expect(oldClaim.canvasVersion).toBeUndefined();
+      expect(oldClaim.job!.id).toBe(plan.id);
+      await operate({
+        action: 'complete',
+        protocolVersion: 1,
+        workerId: 'old_helper',
+        jobId: plan.id,
+        leaseToken: oldClaim.job!.leaseToken,
+        result: { ...result, requirements: [] },
+      });
+      expect((await claim('old_helper', false)).job).toBeNull();
+      const active = await claim('new_helper', true);
+      expect(active.job!.id).toBe(queued.id);
+      expect(active.job!.context).toEqual(p);
+      const complete = (screens: Project['screens']) =>
+        operate({
+          action: 'complete',
+          protocolVersion: 1,
+          workerId: 'new_helper',
+          jobId: queued.id,
+          leaseToken: active.job!.leaseToken,
+          result: { ...result, plan: null, requirements: [], screens },
+        });
+      const stripped = { ...p.screens[0], nodes: [] };
+      delete stripped.canvas;
+      await expect(complete([stripped])).rejects.toMatchObject({
+        code: 'canvas_geometry_required',
+      });
+      const foreign = structuredClone(p.screens);
+      foreign[0].nodes[0].image!.assetId = 'another_projects_asset';
+      await expect(complete(foreign)).rejects.toMatchObject({ code: 'invalid_result' });
+      expect((await listJobs(env, owner, p.id)).find((job) => job.id === queued.id)!.status).toBe(
+        'running',
+      );
+      const proposed = structuredClone(p.screens);
+      proposed[0].nodes[0].frame!.x = 32;
+      await expect(complete(proposed)).resolves.toEqual({ ok: true });
+      const proposal = (await listProposals(env, owner, p.id)).find(
+        (item) => item.jobId === queued.id,
+      )!;
+      expect(proposal.result.screens).toEqual(proposed);
+      const applied = await applyProposal(env, owner, p.id, proposal.id, p.revision);
+      expect(applied.screens).toEqual(proposed);
+      expect((await getProject(env, owner, p.id)).screens).toEqual(proposed);
+    }
+  });
+
+  it('still lets old helpers generate and refine legacy flow screens', async () => {
+    const owner = 'legacy-flow@canvas.test';
+    const p = await newProject(env, owner, 'Legacy flow');
+    const claim = () =>
+      bridgeOperation(env, owner, {
+        action: 'claim',
+        protocolVersion: 1,
+        workerId: 'legacy_flow',
+        capabilities: [...JOB_KINDS],
+      }) as Promise<{ job: { id: string; leaseToken: string } }>;
+    await claim();
+    const queued = await enqueueJob(env, owner, p, {
+      kind: 'wireframe.generate',
+      instruction: 'Create a flow screen.',
+    });
+    const active = await claim();
+    expect(active.job.id).toBe(queued.id);
+    await expect(
+      bridgeOperation(env, owner, {
+        action: 'complete',
+        protocolVersion: 1,
+        workerId: 'legacy_flow',
+        jobId: queued.id,
+        leaseToken: active.job.leaseToken,
+        result: {
+          ...result,
+          plan: null,
+          requirements: [],
+          screens: [
+            {
+              id: 'legacy_screen',
+              name: 'Legacy',
+              platform: 'desktop',
+              state: 'default',
+              description: '',
+              nodes: [createNode('text')],
+            },
+          ],
+        },
+      }),
+    ).resolves.toEqual({ ok: true });
   });
   it('persists bounded progress, usage and helper version while resisting delayed telemetry and completion retries', async () => {
     const { lease, read } = await claimedJob('telemetry_current', '1.0.2');

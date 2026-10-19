@@ -6,6 +6,7 @@ import {
   NODE_TYPES,
   type Annotation,
   type Project,
+  type WireNode,
 } from '../shared/model';
 import type { buildProductOverview } from '../shared/overview';
 import {
@@ -471,7 +472,10 @@ describe('safe layout-aware SVG', () => {
     const project = projectFixture();
     const screen = project.screens[0];
     screen.name = '<script>alert(1)</script>';
-    screen.nodes = NODE_TYPES.map((type) => ({
+    const legacyTypes = NODE_TYPES.filter(
+      (type) => !['group', 'rectangle', 'ellipse', 'line', 'path'].includes(type),
+    );
+    screen.nodes = legacyTypes.map((type) => ({
       ...createNode(type, '<img src=x onerror="alert(1)"> & text'),
       id: `${type}\" onload=\"alert(1)`,
       style: { background: 'url(https://evil.example/track)', color: 'red\" onload=\"alert(1)' },
@@ -484,7 +488,7 @@ describe('safe layout-aware SVG', () => {
     expect(svg).not.toContain('" onload="');
     expect(svg).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(svg).toContain('&quot; onload=&quot;');
-    for (const type of NODE_TYPES) expect(svg).toContain(`data-node-type="${type}"`);
+    for (const type of legacyTypes) expect(svg).toContain(`data-node-type="${type}"`);
   });
 
   it('wraps long text within mobile components and grows the SVG instead of clipping it', () => {
@@ -516,6 +520,312 @@ describe('safe layout-aware SVG', () => {
     const second = rect('card_b');
     expect(first[0]).toBe(second[0]);
     expect(first[1] + first[3]).toBeLessThan(second[1]);
+  });
+});
+
+function sceneNode(
+  type: WireNode['type'],
+  id: string,
+  frame: NonNullable<WireNode['frame']>,
+  fields: Partial<WireNode> = {},
+): WireNode {
+  return { ...createNode(type), id, frame, ...fields };
+}
+function canvasFixture(): Project {
+  const project = projectFixture();
+  project.screens[0].canvas = { width: 640, height: 480 };
+  project.screens[0].nodes = [];
+  project.comments = [];
+  return project;
+}
+
+describe('freeform scene handoff', () => {
+  it('preserves local geometry, nested centre rotation, paint order and transformed annotation pins', () => {
+    const project = canvasFixture();
+    const screen = project.screens[0];
+    screen.nodes = [
+      sceneNode(
+        'group',
+        'rotated_group',
+        { x: 100, y: 50, width: 200, height: 100, rotation: 90 },
+        {
+          layout: 'column',
+          locked: true,
+          children: [
+            sceneNode('rectangle', 'rotated_child', {
+              x: 20,
+              y: 10,
+              width: 40,
+              height: 20,
+              rotation: 90,
+            }),
+          ],
+        },
+      ),
+      sceneNode('ellipse', 'top_layer', { x: 80, y: 100, width: 60, height: 30, rotation: 0 }),
+      sceneNode(
+        'group',
+        'hidden_group',
+        { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
+        {
+          hidden: true,
+          children: [
+            sceneNode('text', 'hidden_child', { x: 10, y: 10, width: 80, height: 20, rotation: 0 }),
+          ],
+        },
+      ),
+    ];
+    const note = {
+      ...projectFixture().comments[0],
+      target: { kind: 'node' as const, screenId: screen.id, nodeId: 'rotated_child', x: 1, y: 0 },
+    };
+    project.comments = [
+      note,
+      { ...note, id: 'hidden_note', target: { ...note.target, nodeId: 'hidden_child' } },
+    ];
+    const before = structuredClone(project);
+    const svg = renderScreenSvg(screen, project.design, project.comments);
+    expect(svg).toContain('width="940" height="480" viewBox="0 0 940 480"');
+    expect(svg).toContain('transform="translate(100 50) rotate(90 100 50)"');
+    expect(svg).toContain('transform="translate(20 10) rotate(90 20 10)"');
+    expect(svg).toContain('data-node-id="rotated_group"');
+    expect(svg.indexOf('data-node-id="rotated_child"')).toBeLessThan(
+      svg.indexOf('data-node-id="top_layer"'),
+    );
+    // Child top-right rotates into parent (50,40), then into world (210,50).
+    expect(svg).toContain('d="M 210 50 L 660 30"');
+    expect(svg).not.toContain('hidden_group');
+    expect(svg).not.toContain('hidden_child');
+    expect(svg).not.toContain('hidden_note');
+    expect(svg).toContain('clip-path="url(#scene-canvas)"');
+    expect(project).toEqual(before);
+    expect(renderScreenSvg(screen, project.design, project.comments)).toBe(svg);
+  });
+
+  it('exports shape dimensions, normalized path points, strokes, opacity, font weight and fine geometry', () => {
+    const project = canvasFixture();
+    project.screens[0].nodes = [
+      sceneNode(
+        'rectangle',
+        'rectangle',
+        { x: -5.125, y: 8, width: 120, height: 60, rotation: 13.123456 },
+        {
+          style: {
+            background: '#abc',
+            stroke: '#123456',
+            strokeWidth: 3,
+            opacity: 0.375,
+            radius: 6,
+          },
+        },
+      ),
+      sceneNode('ellipse', 'ellipse', { x: 150, y: 10, width: 80, height: 40, rotation: 0 }),
+      sceneNode('line', 'line', { x: 20, y: 100, width: 70, height: 30, rotation: -45 }),
+      sceneNode(
+        'path',
+        'path',
+        { x: 200, y: 100, width: 120, height: 60, rotation: 0 },
+        {
+          points: [
+            { x: 0, y: 1 },
+            { x: 0.25, y: 0.5 },
+            { x: 1, y: 0 },
+          ],
+          style: { stroke: '#654321', strokeWidth: 4 },
+        },
+      ),
+      sceneNode(
+        'text',
+        'text',
+        { x: 20, y: 180, width: 300, height: 80, rotation: 0 },
+        {
+          text: 'Exact wording\nSecond line',
+          style: { fontSize: 20, fontWeight: 600, padding: 4 },
+        },
+      ),
+    ];
+    const svg = renderScreenSvg(project.screens[0], project.design);
+    expect(svg).toContain('translate(-5.125 8) rotate(13.123456 60 30)');
+    expect(svg).toContain('opacity="0.375"');
+    expect(svg).toContain(
+      'width="120" height="60" rx="6" fill="#abc" stroke="#123456" stroke-width="3"',
+    );
+    expect(svg).toContain('<ellipse cx="40" cy="20" rx="40" ry="20"');
+    expect(svg).toContain('<line x1="0" y1="0" x2="70" y2="30"');
+    expect(svg).toContain(
+      '<path d="M 0 60 L 30 30 L 120 0" fill="none" stroke="#654321" stroke-width="4"',
+    );
+    expect(svg).toContain('font-size="20" font-weight="600"');
+    expect(svg).toContain(
+      '<tspan x="4" y="24">Exact wording</tspan><tspan x="4" y="54">Second line</tspan>',
+    );
+  });
+
+  it('bundles owned raster placement once and keeps ZIP JSON, SVG links, checksums and GitHub files portable', async () => {
+    const project = canvasFixture();
+    project.assets = [uploadedImage];
+    project.screens[0].nodes = (['cover', 'contain'] as const).map((fit, i) =>
+      sceneNode(
+        'image',
+        `image_${fit}`,
+        { x: i * 250, y: 30, width: 200, height: 100, rotation: i * 15 },
+        {
+          image: { assetId: uploadedImage.id, fit },
+          style: { radius: 12 },
+        },
+      ),
+    );
+    const before = structuredClone(project);
+    const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+    const get = vi.fn(async () => ({
+      size: bytes.length,
+      customMetadata: { owner: 'owner', projectId: project.id },
+      httpMetadata: { contentType: 'image/png' },
+      arrayBuffer: async () => bytes.buffer,
+    }));
+    const network = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Export must not fetch remote content.'));
+    let exported: Awaited<ReturnType<typeof buildProjectExport>>;
+    try {
+      exported = await buildProjectExport(project, { bucket: { get }, owner: 'owner' });
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      network.mockRestore();
+    }
+    const archive = unzipSync(exported.zip);
+    const svg = strFromU8(archive['screens/01-my-workshops.svg']);
+    expect(get).toHaveBeenCalledExactlyOnceWith('opaque_1');
+    expect((svg.match(/href="\.\.\/assets\/001-workshop-photo\.png"/g) || []).length).toBe(2);
+    expect(svg).toContain('preserveAspectRatio="xMidYMid slice" clip-path="url(#scene-layer-1)"');
+    expect(svg).toContain('preserveAspectRatio="xMidYMid meet" clip-path="url(#scene-layer-2)"');
+    expect(svg).not.toContain('/api/assets/');
+    expect(svg).not.toContain('https://');
+    expect(archive['assets/001-workshop-photo.png']).toEqual(bytes);
+    expect(JSON.parse(strFromU8(archive['project.json']))).toEqual(project);
+    expect(project).toEqual(before);
+    expect(strFromU8(archive['CODEX.md'])).toContain('Canvas SVGs preserve stored layer geometry');
+    expect(strFromU8(archive['CODEX.md'])).toContain('keep the package folders together');
+    const manifest = JSON.parse(strFromU8(archive['manifest.json']));
+    const svgFile = manifest.files.find(
+      (file: { path: string }) => file.path === 'screens/01-my-workshops.svg',
+    );
+    expect(svgFile.bytes).toBe(archive[svgFile.path].byteLength);
+    const digest = await crypto.subtle.digest('SHA-256', archive[svgFile.path]);
+    expect(svgFile.sha256).toBe(
+      Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join(''),
+    );
+    expect((await buildProjectExport(project, { bucket: { get }, owner: 'owner' })).zip).toEqual(
+      exported.zip,
+    );
+    const { request, calls } = githubMock();
+    await publishGithubExport(exported.files, { ...destination, fetch: request as typeof fetch });
+    const tree = calls.find((call) => call.path === '/git/trees')?.body?.tree as { path: string }[];
+    expect(tree.map((entry) => entry.path)).toContain('docs/product/screens/01-my-workshops.svg');
+    expect(tree.map((entry) => entry.path)).toContain('docs/product/assets/001-workshop-photo.png');
+  });
+
+  it('fails explicitly for missing, foreign, unbundled or unsafe canvas image references', async () => {
+    const project = canvasFixture();
+    const image = sceneNode(
+      'image',
+      'image',
+      { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
+      {
+        image: { assetId: uploadedImage.id, fit: 'cover' },
+      },
+    );
+    project.screens[0].nodes = [image];
+    await expect(
+      buildProjectExport(project, { bucket: emptyBucket(), owner: 'owner' }),
+    ).rejects.toMatchObject({ code: 'EXPORT_SCENE_IMAGE_UNAVAILABLE' });
+    for (const href of [
+      'https://evil.example/image.png',
+      'data:image/svg+xml,<svg/>',
+      'assets/../../private.png',
+      'assets/one.svg',
+      'assets/x.png" onload="bad',
+    ])
+      expect(() =>
+        renderScreenSvg(
+          project.screens[0],
+          project.design,
+          [],
+          new Map([[uploadedImage.id, href]]),
+        ),
+      ).toThrow(/unavailable/);
+    project.assets = [{ ...uploadedImage, imageUrl: '/sample/warm.svg' }];
+    await expect(
+      buildProjectExport(project, { bucket: emptyBucket(), owner: 'owner' }),
+    ).rejects.toMatchObject({ code: 'EXPORT_SCENE_IMAGE_UNAVAILABLE' });
+    project.assets = [uploadedImage];
+    const arrayBuffer = vi.fn();
+    await expect(
+      buildProjectExport(project, {
+        owner: 'owner',
+        bucket: {
+          get: async () => ({
+            size: 1,
+            customMetadata: { owner: 'owner', projectId: 'another_project' },
+            httpMetadata: { contentType: 'image/png' },
+            arrayBuffer,
+          }),
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'EXPORT_ASSET_UNAVAILABLE' });
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed geometry and keeps hostile scene content inert', () => {
+    const project = canvasFixture();
+    const node = sceneNode(
+      'text',
+      'unsafe" onload="bad',
+      { x: 0, y: 0, width: 200, height: 100, rotation: 0 },
+      {
+        name: '<script>bad</script>',
+        text: '<img src=x onerror="bad">',
+        style: { background: 'url(https://evil.example/track)', stroke: 'red" onload="bad' },
+      },
+    );
+    project.screens[0].nodes = [node];
+    const svg = renderScreenSvg(project.screens[0], project.design);
+    expect(svg).toContain('&lt;script&gt;bad&lt;/script&gt;');
+    expect(svg).toContain('&lt;img');
+    expect(svg).not.toMatch(/<script|<img|" onload="|https:\/\/evil/);
+    for (const frame of [
+      undefined,
+      { ...node.frame!, x: NaN },
+      { ...node.frame!, width: Infinity },
+      { ...node.frame!, height: 0 },
+      { ...node.frame!, rotation: 361 },
+    ]) {
+      project.screens[0].nodes = [{ ...node, frame }];
+      expect(() => renderScreenSvg(project.screens[0], project.design)).toThrow(/geometry/);
+    }
+    project.screens[0].nodes = [
+      sceneNode('path', 'bad_path', node.frame!, {
+        points: [
+          { x: 0, y: 0 },
+          { x: 2, y: 1 },
+        ],
+      }),
+    ];
+    expect(() => renderScreenSvg(project.screens[0], project.design)).toThrow(/invalid points/);
+  });
+
+  it('keeps the legacy SVG path unchanged until a screen explicitly gains a canvas', () => {
+    const project = projectFixture();
+    const legacy = renderScreenSvg(project.screens[0], project.design, project.comments);
+    const tagged = structuredClone(project.screens[0]);
+    tagged.nodes[0].frame = { x: 400, y: 500, width: 10, height: 10, rotation: 45 };
+    tagged.nodes[0].style = {
+      ...tagged.nodes[0].style,
+      opacity: 0.25,
+      stroke: '#123456',
+      strokeWidth: 12,
+    };
+    expect(renderScreenSvg(tagged, project.design, project.comments, new Map())).toBe(legacy);
   });
 });
 

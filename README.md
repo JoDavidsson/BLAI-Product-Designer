@@ -4,12 +4,12 @@ A connected studio for turning a product idea into a specification Codex can bui
 
 ![The product planning workspace](docs/screenshots/product-plan.png)
 
-Also see the [wireframe editor](docs/screenshots/wireframes.png) and [handoff workspace](docs/screenshots/handoff.png).
+Also see the [freeform canvas](docs/screenshots/freeform-canvas.png) (synthetic swipe-card test composition), [legacy wireframe editor](docs/screenshots/wireframes.png), and [handoff workspace](docs/screenshots/handoff.png).
 
 ## First pass
 
 - **Product planning:** an editable, structured specification beside a Codex conversation. AI changes arrive as proposals with current/proposed plan text, inspectable screen structure, and visible color/type/radius changes before applying.
-- **Wireframes:** nested rows, columns, cards, text, buttons, and other components; drag ordering, cross-screen copy/paste, keyboard editing, parent/layout controls, desktop/mobile screens, explicit state variants, and clickable navigation.
+- **Design canvas:** freely position, overlap, resize, and rotate editable shapes, text, images, and controls. Draw rectangles, ellipses, lines, and freehand paths; manage layers, groups, alignment, and optional automatic layout. New screens start blank. Older flow screens retain their original editor and have an undoable **Edit freely** conversion. Desktop/mobile frames, state variants, and clickable navigation remain available.
 - **Automatic overview:** one click visualizes the existing plan, written journeys, screen connections, decisions, comments, and references. Explore original sources and return to edit them; no diagram authoring or AI connection is required. See [the overview and screenshots](docs/PELE-EXPERIMENT.md).
 - **Moodboard and build review:** image uploads, HTTPS image/webpage references, source notes, and screenshot review.
 - **Annotations:** normalized pins with dotted connectors, threaded replies, resolve/reopen, and conversion to accepted requirements. Notes from removed targets remain in project discussion with their previous location.
@@ -60,7 +60,7 @@ With the development server running:
 PLAYWRIGHT_CHROMIUM_EXECUTABLE=/usr/bin/chromium npm run test:e2e
 ```
 
-The five browser workflows create and remove their own projects. The same workflows are configured in GitHub Actions alongside unit/helper tests, formatting, and the production build. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real drag operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, delayed-upload regressions, in-flight undo, revision conflicts, proposal diffs, and stale checkpoint responses. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
+The browser workflows create and remove their own projects. The same workflows are configured in GitHub Actions alongside unit/helper tests, formatting, and the production build. They exercise autosave, project switching, checkpoints, ZIP downloads, layout editing, real pointer operations, prototype navigation, R2 uploads, pinned comments, accepted requirements, delayed-upload regressions, in-flight undo, revision conflicts, proposal diffs, and stale checkpoint responses. Set `BLAI_TEST_URL` for another local test server and `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for another Chromium installation.
 
 Unit and integration tests include real local D1/R2, owner isolation, Access authentication, concurrency, helper leases/cancellation, stale AI proposals, imported URL validation, and GitHub API fixtures. Fixtures validate the protocol; they do not establish a live Codex subscription connection or a real GitHub write.
 
@@ -68,7 +68,11 @@ Unit and integration tests include real local D1/R2, owner isolation, Access aut
 
 Use the toolbar to undo/redo changes across the workspace. Outside text fields, `Ctrl/⌘ Z` undoes and `Ctrl/⌘ Shift Z` redoes. Text fields retain their native editing shortcuts. Session history holds up to 50 edits subject to a memory budget, resets when switching projects or reloading, and does not replace named checkpoints.
 
-When the wireframe canvas or layers have focus, `Ctrl/⌘ C` copies a component, `Ctrl/⌘ V` pastes it into the selected container (including across screens), and `Ctrl/⌘ D` duplicates it. Delete/Backspace removes the selected component. The inspector's parent and layout controls move and reshape components while keeping pinned comments attached.
+On a freeform canvas, drag to place layers, use the corner/edge handles to resize, and use the handle above a selection to rotate. Shift-click adds layers to a selection; dragging on empty canvas selects an area. Double-click text to edit it. Hold Space and drag to pan, or use the Hand tool. Arrow keys nudge by one pixel (ten with Shift). `Ctrl/⌘ G` groups sibling layers; add Shift to ungroup. Groups resize proportionally. Alignment, stacking, visibility, locking, frame size, and optional row/column layout live in the layers and properties panels.
+
+When the canvas or layers have focus, `Ctrl/⌘ C` copies a selection, `Ctrl/⌘ V` pastes, and `Ctrl/⌘ D` duplicates it. Freeform paste uses canvas coordinates; the legacy flow editor pastes into the selected container. Delete/Backspace removes the selection. Escape cancels an active gesture without adding an undo step. Image uploads merge into the latest project and are rejected after undo, restore, or a project switch. Images used by canvas layers must be detached from those layers before their board reference can be removed.
+
+Freeform AI requests require **BLAI Helper 1.1.0**. Designer continues to use Astra Medium through your ChatGPT Codex subscription. The helper and Worker negotiate canvas support; an older helper cannot replace an existing freeform screen with a flow result. See the [scene contract and implementation plan](docs/FREEFORM-CANVAS.md).
 
 When another tab saves a newer revision, your edits remain visible. Download the unsaved copy before choosing **Reload saved version** if you want to keep both versions. A pending upload is not added during a project replacement; the board reports that it was not attached so it can be uploaded again.
 

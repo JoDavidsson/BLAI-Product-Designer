@@ -100,18 +100,29 @@ export default function WireframeCommentMargin({
           card,
         ]),
       );
+      const pins = new Map(
+        [...artboard.querySelectorAll<HTMLElement>('.wf-comment-pin[data-comment-id]')].map(
+          (pin) => [pin.dataset.commentId, pin],
+        ),
+      );
       const anchors = comments
         .flatMap((comment) => {
           const target =
             comment.target.kind === 'node' ? nodes.get(comment.target.nodeId) : artboard;
           const card = cards.get(comment.id);
-          if (!target || !card) return [];
+          if (!target || !card || !target.getClientRects().length) return [];
           const bounds = target.getBoundingClientRect();
+          const pin = pins.get(comment.id)?.getBoundingClientRect();
           return [
             {
               id: comment.id,
-              x: bounds.left - origin.left + bounds.width * clamp(comment.target.x),
-              y: bounds.top - origin.top + bounds.height * clamp(comment.target.y),
+              // The rendered pin includes ancestor rotation, scale, and zoom.
+              x: pin
+                ? pin.left + pin.width / 2 - origin.left
+                : bounds.left - origin.left + bounds.width * clamp(comment.target.x),
+              y: pin
+                ? pin.top + pin.height / 2 - origin.top
+                : bounds.top - origin.top + bounds.height * clamp(comment.target.y),
               height: card.getBoundingClientRect().height,
             },
           ];

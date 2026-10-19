@@ -1,4 +1,67 @@
-import { PLAN_FIELDS, type AIProposal, type Project, type WireNode } from '../../shared/model';
+import { useEffect, useRef, useState } from 'react';
+import {
+  PLAN_FIELDS,
+  type AIProposal,
+  type Project,
+  type WireNode,
+  type Screen,
+  type DesignTokens,
+} from '../../shared/model';
+import FreeformCanvas from './FreeformCanvas';
+
+function ScreenPreview({
+  screen,
+  design,
+  project,
+}: {
+  screen: Screen;
+  design: DesignTokens;
+  project: Project;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  const [availableWidth, setAvailableWidth] = useState(240);
+  useEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    const measure = () => setAvailableWidth(element.clientWidth);
+    const resize = new ResizeObserver(measure);
+    resize.observe(element);
+    measure();
+    return () => resize.disconnect();
+  }, []);
+  if (!screen.canvas) return null;
+  const zoom = Math.min(1, availableWidth / screen.canvas.width, 300 / screen.canvas.height);
+  return (
+    <div
+      ref={container}
+      role="img"
+      aria-label={`Proposed design for ${screen.name}`}
+      style={{ width: '100%', maxWidth: 400, margin: '16px auto' }}
+    >
+      <div
+        inert
+        style={{
+          width: screen.canvas.width * zoom,
+          height: screen.canvas.height * zoom,
+          margin: 'auto',
+          overflow: 'hidden',
+        }}
+      >
+        <FreeformCanvas
+          screen={screen}
+          design={design}
+          assets={project.assets}
+          selectedIds={[]}
+          tool="select"
+          zoom={zoom}
+          onSelection={() => undefined}
+          onCommit={() => undefined}
+          preview
+        />
+      </div>
+    </div>
+  );
+}
 
 function Structure({ nodes }: { nodes: WireNode[] }) {
   if (!nodes.length) return <p className="muted">No components.</p>;
@@ -78,6 +141,13 @@ export default function ProposalChanges({
                 </small>
               </summary>
               <p>{screen.description}</p>
+              {screen.canvas && (
+                <ScreenPreview
+                  screen={screen}
+                  design={design ?? project.design}
+                  project={project}
+                />
+              )}
               <Structure nodes={screen.nodes} />
             </details>
           ))}

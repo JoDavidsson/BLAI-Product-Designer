@@ -21,6 +21,7 @@ import {
   ZoomIn,
 } from 'lucide-react';
 import type { AnnotationTarget, BoardAsset, JobKind, Project } from '../../shared/model';
+import { walkNodes } from '../../shared/model';
 import AnnotationOverlay from './AnnotationOverlay';
 import AnnotationPanel from './AnnotationPanel';
 import './board.css';
@@ -911,6 +912,19 @@ export default function BoardWorkspace({
                           : 'Remove reference'
                       }
                       onClick={() => {
+                        let inUse = false;
+                        for (const screen of project.screens) {
+                          walkNodes(screen.nodes, (node) => {
+                            if (node.image?.assetId === selected.id) inUse = true;
+                          });
+                        }
+                        if (inUse) {
+                          setConfirmDelete(false);
+                          onToast(
+                            'This image is used on a canvas. Remove its image layers before removing the reference.',
+                          );
+                          return;
+                        }
                         if (!confirmDelete) {
                           setConfirmDelete(true);
                           return;

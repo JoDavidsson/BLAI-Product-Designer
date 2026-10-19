@@ -13,7 +13,7 @@
     "helper": "node bridge/start.mjs",
     "deploy": "npm run build:release && wrangler deploy",
     "test:helper": "node --test tests/helper.node.mjs tests/helper-status.node.mjs tests/helper-runner.node.mjs",
-    "test:e2e": "node tests/e2e-app.mjs && node tests/e2e-wireframe.mjs && node tests/e2e-board.mjs && node tests/e2e-resilience.mjs && node tests/e2e-overview.mjs && node tests/e2e-ai-activity.mjs",
+    "test:e2e": "node tests/e2e-app.mjs && node tests/e2e-wireframe.mjs && node tests/e2e-board.mjs && node tests/e2e-resilience.mjs && node tests/e2e-overview.mjs && node tests/e2e-ai-activity.mjs && node tests/e2e-freeform.mjs",
     "helper:configure": "node bridge/configure-linux.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

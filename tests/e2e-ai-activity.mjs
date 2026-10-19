@@ -233,8 +233,8 @@ try {
 
   await page.getByRole('button', { name: 'Workspace settings', exact: true }).click();
   await expect(
-    page.getByRole('link', { name: 'Download BLAI Helper 1.0.3', exact: true }),
-  ).toHaveAttribute('download', 'blai-helper-1.0.3.tar.gz');
+    page.getByRole('link', { name: 'Download BLAI Helper 1.1.0', exact: true }),
+  ).toHaveAttribute('download', 'blai-helper-1.1.0.tar.gz');
   await page.setViewportSize({ width: 390, height: 844 });
   await activity.getByRole('button', { name: 'Show AI request activity', exact: true }).click();
   const bounds = await details().boundingBox();

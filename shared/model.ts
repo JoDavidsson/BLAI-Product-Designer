@@ -37,8 +37,29 @@ export const NODE_TYPES = [
   'nav',
   'divider',
   'badge',
+  'group',
+  'rectangle',
+  'ellipse',
+  'line',
+  'path',
 ] as const;
 export type NodeType = (typeof NODE_TYPES)[number];
+export interface NodeFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /** Degrees about the layer's centre, in its parent's coordinate system. */
+  rotation: number;
+}
+export interface NodePoint {
+  x: number;
+  y: number;
+}
+export interface ScreenCanvas {
+  width: number;
+  height: number;
+}
 export interface NodeStyle {
   background?: string;
   color?: string;
@@ -47,6 +68,10 @@ export interface NodeStyle {
   gap?: number;
   radius?: number;
   align?: 'start' | 'center' | 'end';
+  stroke?: string;
+  strokeWidth?: number;
+  opacity?: number;
+  fontWeight?: 400 | 500 | 600 | 700;
 }
 export interface WireNode {
   id: string;
@@ -56,6 +81,13 @@ export interface WireNode {
   children: WireNode[];
   style: NodeStyle;
   action?: { screenId: string };
+  /** Optional additive scene data; absent fields retain legacy flow rendering. */
+  frame?: NodeFrame;
+  layout?: 'free' | 'row' | 'column';
+  image?: { assetId: string; fit: 'cover' | 'contain' };
+  points?: NodePoint[];
+  locked?: boolean;
+  hidden?: boolean;
 }
 export interface Screen {
   id: string;
@@ -64,6 +96,7 @@ export interface Screen {
   description: string;
   state: ScreenState;
   nodes: WireNode[];
+  canvas?: ScreenCanvas;
 }
 export interface DesignTokens {
   accent: string;
@@ -267,6 +300,11 @@ export function createNode(type: NodeType, text?: string): WireNode {
     nav: 'Overview · Projects · Settings',
     divider: '',
     badge: 'New',
+    group: '',
+    rectangle: '',
+    ellipse: '',
+    line: '',
+    path: '',
   };
   return {
     id: uid('node'),

@@ -1,0 +1,218 @@
+.canvas-toolstrip {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line, #e7e4df);
+  background: #fff;
+  flex-shrink: 0;
+}
+.canvas-toolstrip button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 7px;
+  background: transparent;
+  color: #66615c;
+  font-size: 11px;
+  cursor: pointer;
+}
+.canvas-toolstrip button:hover,
+.canvas-toolstrip button.active {
+  background: #eeeee9;
+  border-color: #cfcfc2;
+  color: #303527;
+}
+.canvas-toolstrip .canvas-tool-label {
+  font-size: 11px;
+  color: #7c7772;
+  margin-left: auto;
+}
+.canvas-convert-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 16px;
+  background: #f7f6ef;
+  border-bottom: 1px solid #e3e0d3;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.canvas-convert-banner button {
+  white-space: nowrap;
+}
+.canvas-layer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  border-radius: 4px;
+  padding-right: 5px;
+}
+.canvas-layer.selected {
+  background: #eceee3;
+}
+.canvas-layer.hidden-layer .canvas-layer-name {
+  opacity: 0.5;
+}
+.canvas-layer button {
+  border: 0;
+  background: transparent;
+  color: #716d67;
+  padding: 5px;
+  cursor: pointer;
+  min-width: 0;
+}
+.canvas-layer .canvas-layer-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+  flex: 1;
+  font-size: 12px;
+  padding: 8px 2px;
+}
+.canvas-layer-name span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-layer-kind {
+  font-size: 14px;
+  color: #9a968b;
+}
+.canvas-properties fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.canvas-properties fieldset:disabled {
+  opacity: 0.6;
+}
+.canvas-number-grid,
+.canvas-color-grid,
+.canvas-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.canvas-number,
+.canvas-color-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: #777168;
+  min-width: 0;
+}
+.canvas-number input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #e5e0d9;
+  border-radius: 5px;
+  padding: 8px;
+  color: #3f3a33;
+  background: #fff;
+  font: inherit;
+}
+.canvas-color-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.canvas-color-grid input {
+  width: 100%;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid #e5e0d9;
+  border-radius: 4px;
+  background: #fff;
+}
+.canvas-action-grid button,
+.canvas-properties .wf-variant-create button {
+  padding: 8px 5px;
+  background: #fff;
+  border: 1px solid #e5e0d9;
+  border-radius: 5px;
+  font-size: 11px;
+  cursor: pointer;
+  color: #5e584e;
+}
+.canvas-action-grid button:disabled,
+.canvas-layer button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.canvas-image-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 80vh;
+  overflow: auto;
+  background: white;
+  padding: 24px;
+  border: 1px solid #dedbd3;
+  border-radius: 14px;
+  box-shadow: 0 20px 80px #0002;
+}
+.canvas-image-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.canvas-image-dialog h2 {
+  font-size: 20px;
+  margin: 0;
+}
+.canvas-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.canvas-asset-grid button {
+  border: 1px solid #dedbd3;
+  background: #fff;
+  border-radius: 6px;
+  padding: 6px;
+  cursor: pointer;
+  min-width: 0;
+}
+.canvas-asset-grid img {
+  width: 100%;
+  height: 90px;
+  object-fit: contain;
+  background: #f5f4f0;
+}
+.canvas-asset-grid span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  padding: 5px;
+}
+@media (max-width: 700px) {
+  .canvas-toolstrip {
+    padding: 6px;
+    gap: 1px;
+  }
+  .canvas-toolstrip .canvas-tool-label {
+    display: none;
+  }
+  .canvas-convert-banner {
+    font-size: 11px;
+    padding: 8px;
+  }
+  .canvas-asset-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.wf-canvas-stage.canvas-spatial-stage {
+  padding: 240px;
+}

@@ -34,6 +34,23 @@ export const designSchema = z
     font: z.enum(['sans', 'serif']),
   })
   .strict();
+export const frameSchema = z
+  .object({
+    x: z.number().finite().min(-20000).max(20000),
+    y: z.number().finite().min(-20000).max(20000),
+    width: z.number().finite().min(1).max(20000),
+    height: z.number().finite().min(1).max(20000),
+    rotation: z.number().finite().min(-360).max(360),
+  })
+  .strict();
+export const canvasSchema = z
+  .object({
+    width: z.number().finite().min(100).max(10000),
+    height: z.number().finite().min(100).max(10000),
+  })
+  .strict();
+const sceneTypes = new Set(['group', 'rectangle', 'ellipse', 'line', 'path']);
+const layoutTypes = new Set(['group', 'section', 'row', 'column', 'card']);
 export const nodeSchema: z.ZodType<WireNode> = z.lazy(() =>
   z
     .object({
@@ -51,11 +68,47 @@ export const nodeSchema: z.ZodType<WireNode> = z.lazy(() =>
           gap: z.number().min(0).max(100).optional(),
           radius: z.number().min(0).max(64).optional(),
           align: z.enum(['start', 'center', 'end']).optional(),
+          stroke: color.optional(),
+          strokeWidth: z.number().finite().min(0).max(32).optional(),
+          opacity: z.number().finite().min(0).max(1).optional(),
+          fontWeight: z
+            .union([z.literal(400), z.literal(500), z.literal(600), z.literal(700)])
+            .optional(),
         })
         .strict(),
       action: z.object({ screenId: idSchema }).strict().optional(),
+      frame: frameSchema.optional(),
+      layout: z.enum(['free', 'row', 'column']).optional(),
+      image: z
+        .object({ assetId: idSchema, fit: z.enum(['cover', 'contain']) })
+        .strict()
+        .optional(),
+      points: z
+        .array(
+          z
+            .object({
+              x: z.number().finite().min(0).max(1),
+              y: z.number().finite().min(0).max(1),
+            })
+            .strict(),
+        )
+        .min(2)
+        .max(256)
+        .optional(),
+      locked: z.boolean().optional(),
+      hidden: z.boolean().optional(),
     })
-    .strict(),
+    .strict()
+    .superRefine((node, ctx) => {
+      if (node.layout !== undefined && !layoutTypes.has(node.type))
+        ctx.addIssue({ code: 'custom', message: 'Only containers support automatic layout.' });
+      if (node.image !== undefined && node.type !== 'image')
+        ctx.addIssue({ code: 'custom', message: 'Only image layers can reference an image.' });
+      if (node.type === 'path' && !node.points)
+        ctx.addIssue({ code: 'custom', message: 'Path layers require points.' });
+      if (node.type !== 'path' && node.points !== undefined)
+        ctx.addIssue({ code: 'custom', message: 'Only path layers support points.' });
+    }),
 );
 export const screenSchema = z
   .object({
@@ -65,8 +118,33 @@ export const screenSchema = z
     description: z.string().max(4000),
     state: z.enum(['default', 'loading', 'empty', 'error', 'success']),
     nodes: z.array(nodeSchema).max(100),
+    canvas: canvasSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((screen, ctx) => {
+    const visit = (nodes: WireNode[]) => {
+      for (const node of nodes) {
+        if (screen.canvas && !node.frame)
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Every canvas layer requires a complete frame.',
+          });
+        if (
+          !screen.canvas &&
+          (sceneTypes.has(node.type) ||
+            node.frame !== undefined ||
+            node.layout !== undefined ||
+            node.image !== undefined ||
+            node.points !== undefined ||
+            node.hidden !== undefined ||
+            node.locked !== undefined)
+        )
+          ctx.addIssue({ code: 'custom', message: 'Scene layers require a canvas screen.' });
+        visit(node.children);
+      }
+    };
+    visit(screen.nodes);
+  });
 export const diagramSchema = z
   .object({
     id: idSchema,
@@ -163,6 +241,7 @@ export const projectSchema: z.ZodType<Project> = z
   .strict()
   .superRefine((p, ctx) => {
     const ids = new Set<string>();
+    const assets = new Map(p.assets.map((asset) => [asset.id, asset]));
     let count = 0;
     function add(id: string) {
       if (ids.has(id)) ctx.addIssue({ code: 'custom', message: `Duplicate identifier: ${id}` });
@@ -179,6 +258,11 @@ export const projectSchema: z.ZodType<Project> = z
       for (const n of nodes) {
         add(n.id);
         count++;
+        if (n.image && !assets.get(n.image.assetId)?.imageUrl)
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Image layers must reference an existing project image.',
+          });
         visit(n.children, depth + 1);
       }
     }

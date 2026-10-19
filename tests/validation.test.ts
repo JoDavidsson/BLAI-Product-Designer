@@ -7,11 +7,37 @@ import {
   reconcileReferences,
   type AIResult,
   type ProductDiagram,
+  type Project,
   type WireNode,
 } from '../shared/model';
 import { createSampleProject } from '../shared/seed';
 import { boundedJsonDepth, projectSchema, resultSchema } from '../shared/validation';
 import { proposalToProject } from '../worker/projects';
+
+function canvasProject(): Project {
+  const project = createProject();
+  const layer = createNode('rectangle');
+  layer.frame = { x: -20, y: 30, width: 160, height: 90, rotation: 25 };
+  layer.style = {
+    background: '#ffffff',
+    stroke: '#123',
+    strokeWidth: 2,
+    opacity: 0.8,
+    fontWeight: 600,
+  };
+  project.screens = [
+    {
+      id: 'canvas_screen',
+      name: 'Canvas',
+      platform: 'desktop',
+      state: 'default',
+      description: '',
+      canvas: { width: 1000, height: 800 },
+      nodes: [layer],
+    },
+  ];
+  return project;
+}
 
 const result = (): AIResult => ({
   title: 'Proposal',
@@ -151,6 +177,190 @@ describe('project and AI data safety', () => {
     expect(next.chat.map((message) => message.role)).toEqual(['user', 'assistant']);
     expect(next.chat[0]).toEqual(p.chat[0]);
     expect(next.chat[1].text).toBe(result().reply);
+  });
+});
+
+describe('additive freeform scenes', () => {
+  it('preserves legacy documents exactly and round-trips complete scene geometry', () => {
+    const legacy = createSampleProject();
+    expect(projectSchema.parse(JSON.parse(JSON.stringify(legacy)))).toEqual(legacy);
+    const project = canvasProject();
+    const group = createNode('group');
+    group.frame = { x: 100, y: 80, width: 500, height: 400, rotation: -45 };
+    group.layout = 'row';
+    group.locked = true;
+    group.hidden = false;
+    group.children = project.screens[0].nodes;
+    for (const type of ['ellipse', 'line', 'text', 'path'] as const) {
+      const node = createNode(type, type === 'text' ? 'Editable text' : '');
+      node.frame = { x: 20, y: 40, width: 60, height: 50, rotation: 0 };
+      if (type === 'path')
+        node.points = [
+          { x: 0, y: 0 },
+          { x: 0.4, y: 1 },
+          { x: 1, y: 0 },
+        ];
+      group.children.push(node);
+    }
+    project.screens[0].nodes = [group];
+    const encoded = JSON.stringify(project);
+    expect(projectSchema.parse(JSON.parse(encoded))).toEqual(project);
+    expect(resultSchema.parse({ ...result(), screens: project.screens }).screens).toEqual(
+      project.screens,
+    );
+  });
+
+  it('rejects non-finite, incomplete, oversized and executable-looking geometry and styles', () => {
+    const original = canvasProject();
+    for (const patch of [
+      { x: Infinity },
+      { y: NaN },
+      { x: -20001 },
+      { y: 20001 },
+      { width: 0 },
+      { height: 20001 },
+      { rotation: 361 },
+      { rotation: -361 },
+      { width: undefined },
+      { transform: 'rotate(20deg)' },
+    ]) {
+      const project = structuredClone(original);
+      Object.assign(project.screens[0].nodes[0].frame!, patch);
+      expect(projectSchema.safeParse(project).success, JSON.stringify(patch)).toBe(false);
+    }
+    for (const canvas of [
+      { width: 99, height: 100 },
+      { width: 100, height: 10001 },
+      { width: NaN, height: 100 },
+    ])
+      expect(
+        projectSchema.safeParse({ ...original, screens: [{ ...original.screens[0], canvas }] })
+          .success,
+      ).toBe(false);
+    for (const patch of [
+      { stroke: 'url(https://example.com/pixel)' },
+      { strokeWidth: 33 },
+      { strokeWidth: -1 },
+      { opacity: 1.1 },
+      { opacity: -0.1 },
+      { fontWeight: 900 },
+      { position: 'fixed' },
+    ]) {
+      const project = structuredClone(original);
+      Object.assign(project.screens[0].nodes[0].style, patch);
+      expect(projectSchema.safeParse(project).success).toBe(false);
+    }
+  });
+
+  it('requires frames throughout canvas trees and disallows scene data on flow screens', () => {
+    const project = canvasProject();
+    const parent = createNode('group');
+    parent.frame = { x: 0, y: 0, width: 300, height: 200, rotation: 0 };
+    parent.children = [createNode('text')];
+    project.screens[0].nodes = [parent];
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    parent.children[0].frame = { x: 10, y: 10, width: 200, height: 30, rotation: 0 };
+    expect(projectSchema.safeParse(project).success).toBe(true);
+    delete project.screens[0].canvas;
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    for (const type of ['group', 'rectangle', 'ellipse', 'line', 'path'] as const) {
+      project.screens[0].nodes = [createNode(type)];
+      if (type === 'path')
+        project.screens[0].nodes[0].points = [
+          { x: 0, y: 0 },
+          { x: 1, y: 1 },
+        ];
+      expect(projectSchema.safeParse(project).success).toBe(false);
+    }
+    project.screens[0].nodes = [createNode('text')];
+    expect(projectSchema.safeParse(project).success).toBe(true);
+    project.screens[0].nodes[0].hidden = true;
+    expect(projectSchema.safeParse(project).success).toBe(false);
+  });
+
+  it('keeps layout, point and image data attached to the supported layer types', () => {
+    const project = canvasProject();
+    const node = project.screens[0].nodes[0];
+    node.layout = 'row';
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    node.type = 'group';
+    expect(projectSchema.safeParse(project).success).toBe(true);
+    delete node.layout;
+    node.points = [
+      { x: 0, y: 0 },
+      { x: 1, y: 1 },
+    ];
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    node.type = 'path';
+    expect(projectSchema.safeParse(project).success).toBe(true);
+    for (const points of [
+      undefined,
+      [],
+      [{ x: 0, y: 0 }],
+      [
+        { x: -0.1, y: 0 },
+        { x: 1, y: 1 },
+      ],
+      Array.from({ length: 257 }, () => ({ x: 0, y: 0 })),
+    ]) {
+      node.points = points;
+      expect(projectSchema.safeParse(project).success).toBe(false);
+    }
+    delete node.points;
+    node.type = 'rectangle';
+    node.image = { assetId: 'image_one', fit: 'cover' };
+    expect(projectSchema.safeParse(project).success).toBe(false);
+  });
+
+  it('accepts only image references available in this project, without embedded or remote URLs', () => {
+    const project = canvasProject();
+    const node = project.screens[0].nodes[0];
+    node.type = 'image';
+    node.image = { assetId: 'image_one', fit: 'contain' };
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    project.assets = [
+      {
+        id: 'image_one',
+        title: 'Owned upload',
+        kind: 'reference',
+        imageUrl: '/api/assets/owned_key',
+        sourceUrl: '',
+        note: '',
+        createdAt: project.createdAt,
+      },
+    ];
+    expect(projectSchema.safeParse(project).success).toBe(true);
+    node.image.assetId = 'another_project_image';
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    node.image.assetId = 'image_one';
+    project.assets[0].imageUrl = '';
+    expect(projectSchema.safeParse(project).success).toBe(false);
+    project.assets[0].imageUrl = '/api/assets/owned_key';
+    Object.assign(node.image, { url: 'https://example.com/pixel' });
+    expect(projectSchema.safeParse(project).success).toBe(false);
+  });
+
+  it('keeps geometry and stable annotations through unrelated AI plan edits', () => {
+    const project = canvasProject();
+    const node = project.screens[0].nodes[0];
+    project.comments = [
+      {
+        id: 'canvas_comment',
+        target: { kind: 'node', screenId: 'canvas_screen', nodeId: node.id, x: 0.2, y: 0.8 },
+        body: 'Keep this layer',
+        status: 'open',
+        replies: [],
+        createdAt: project.createdAt,
+      },
+    ];
+    const next = proposalToProject(
+      project,
+      { kind: 'plan.assist', result: result() },
+      'Clarify the plan',
+    );
+    expect(next.screens).toEqual(project.screens);
+    expect(next.comments).toEqual(project.comments);
+    expect(projectSchema.safeParse(next).success).toBe(true);
   });
 });
 

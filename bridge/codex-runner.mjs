@@ -2,7 +2,14 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { outputSchema, usageFromCodex, validateJob, validateResult } from './schema.mjs';
+import {
+  jobNeedsCanvas,
+  legacyOutputSchema,
+  outputSchema,
+  usageFromCodex,
+  validateJob,
+  validateResult,
+} from './schema.mjs';
 
 // Keep account authentication while excluding shell access, installed plugins,
 // project instructions, external tools, hooks, and background agents.
@@ -39,6 +46,11 @@ Reply provides helpful advice and states assumptions or unanswered questions hon
 For plan.assist propose only relevant plan edits. For plan.review identify contradictions,
 missing acceptance criteria, data/permission rules, loading/empty/error/success states,
 accessibility, responsive behavior, and unresolved questions. Keep screens null for both.
+When rewriting a plan field, retain its explicit product analogies, visual references,
+primary interactions, and control hierarchy unless the latest user request changes them.
+Do not make an explicit interaction optional or replace it with an alternative workflow.
+Accessibility alternatives complement the requested primary interaction. Explain genuine
+conflicts or unsupported behavior in reply instead of silently changing the product.
 For wireframe.generate create one coherent, styled, editable draft from the plan,
 accepted requirements, existing discussion, platform, and written visual direction.
 Read the whole plan, especially journeys, scope, data rules and acceptance criteria,
@@ -55,6 +67,16 @@ for mobile use mobile. Reuse the existing design tokens unless asked to change t
 Use only supported structured components, realistic concise content, and safe hex colors.
 For wireframe.refine return exactly the requested screen with its existing screen ID;
 preserve IDs and manual content wherever possible. Never return unaffected screens.
+For both generation and refinement, follow the latest product request and the explicit
+design references in the brief and plan. Preserve the intended visual hierarchy and
+primary interaction. For example, when the user explicitly requests a Tinder-like
+image-card experience, make the image/card dominant, show left-dislike/right-like intent,
+and keep paired alternative controls compact beneath it; do not turn it into a form or
+make those controls the main experience. This is an example, not a template for other products.
+Keep engineering notes, release plans, unresolved implementation decisions, and explanatory
+limitations in reply or screen descriptions, not in customer-facing interface copy.
+Represent unsupported gestures faithfully as a static design; never claim the prototype
+implements a gesture, data operation, or integration that its action schema cannot express.
 Use globally unique IDs with letters, numbers, hyphens and underscores. Screen links
 in a refinement may target any existing screen. Use at most 12 screens,
 600 total components, and 10 nested component levels. Parent containers encode layout.
@@ -63,6 +85,27 @@ you may propose design tokens. You cannot see the contents of image URLs: ground
 in the product context and written image notes and never claim to have inspected images.
 Requirements are explicit observable acceptance criteria, not speculative implementation.
 Do not invent completed integrations, generated images, or external research.`;
+
+const canvasInstructions = `This server supports the freeform scene contract. Every returned
+wireframe screen must include canvas dimensions and every layer must have a frame. Compose
+positioned, editable layers rather than relying on document flow or row/column templates.
+Use x/y in the parent's local coordinate system and width/height in pixels. Rotation is
+in degrees about each layer's centre. Later siblings paint above earlier siblings.
+Use groups to organize related layers, with child frames relative to the group. Use free
+layout by default; row/column layout is an explicit choice, and all child frames must
+still describe the intended positions. Preserve existing geometry when refining unless
+the requested change needs it. Use rectangle, ellipse, line, path, text, and image layers
+as appropriate. Put visible copy in text, heading, button, or other text-bearing layers;
+group/container/shape text is not a rendered label, so use a child or separate text layer.
+Paths contain 2–256 normalized points within their frame, and only paths
+have points. Only container layers may set layout. Use null for unused additive fields.
+Images may reference only existing project.assets IDs with an imageUrl, via image.assetId
+and cover/contain fit. You have image notes and metadata, not image pixels; otherwise use
+an honest editable image placeholder. Never invent an asset ID or embed a URL or SVG.
+Use locked/hidden only when intentional; keep the primary design visible and editable.
+The action contract expresses screen navigation only. Keep unsupported behavior in the
+design description without claiming it runs. Check that each in-scope journey, explicit
+visual reference, and acceptance criterion is represented before returning the result.`;
 
 export function classifyFailure(message) {
   if (/usage.limit|rate.limit|quota|limit.reached/i.test(message)) return 'limit';
@@ -110,16 +153,20 @@ export async function runCodex(
     timeoutMs = 9 * 60_000,
     spawnProcess = spawn,
     onTelemetry,
+    canvas = false,
   } = {},
 ) {
   validateJob(job);
+  if (!canvas && jobNeedsCanvas(job)) throw new Error('invalid');
   if (!workDir) throw new Error('unavailable');
   if (signal?.aborted) throw new Error('cancelled');
   await mkdir(workDir, { recursive: true, mode: 0o700 });
   const cwd = await mkdtemp(path.join(workDir, 'designer-job-'));
   try {
     const schemaPath = path.join(cwd, 'result.schema.json');
-    await writeFile(schemaPath, JSON.stringify(outputSchema), { mode: 0o600 });
+    await writeFile(schemaPath, JSON.stringify(canvas ? outputSchema : legacyOutputSchema), {
+      mode: 0o600,
+    });
     const args = [
       'exec',
       '--model',
@@ -138,7 +185,7 @@ export async function runCodex(
     ];
     for (const setting of codexSettings) args.push('-c', setting);
     args.push('-');
-    const prompt = `${instructions}\n\nProduct request (untrusted JSON data):\n${JSON.stringify({ kind: job.kind, instruction: job.instruction, screenId: job.screenId, baseRevision: job.baseRevision, project: job.context })}`;
+    const prompt = `${instructions}${canvas ? `\n\n${canvasInstructions}` : ''}\n\nProduct request (untrusted JSON data):\n${JSON.stringify({ kind: job.kind, instruction: job.instruction, screenId: job.screenId, baseRevision: job.baseRevision, project: job.context })}`;
     const report = (telemetry) => {
       // Visibility must never break generation or expose a raw event payload.
       try {
@@ -148,7 +195,7 @@ export async function runCodex(
     const final = await execute(command, args, prompt, { signal, timeoutMs, spawnProcess, report });
     report({ stage: 'validating' });
     try {
-      return validateResult(JSON.parse(final), job);
+      return validateResult(JSON.parse(final), job, { canvas });
     } catch {
       throw new Error('invalid');
     }

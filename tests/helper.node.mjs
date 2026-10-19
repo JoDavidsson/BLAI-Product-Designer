@@ -6,8 +6,10 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, readdir, rm, readFile, writeFile, stat, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   CAPABILITIES,
+  CANVAS_CAPABILITY,
   PLAN_KEYS,
   validateJob,
   validateResult,
@@ -158,6 +160,281 @@ test('job envelope rejects unsupported actions and excessive context', () => {
     () => validateJob(job({ context: { id: 'project_1', screens: [], plan: null } })),
     /protocol/,
   );
+});
+
+function canvasDraft() {
+  const pathNode = {
+    ...node('drawn_line'),
+    type: 'path',
+    frame: { x: -5, y: 12, width: 90, height: 30, rotation: 15 },
+    points: [
+      { x: 0, y: 1 },
+      { x: 0.5, y: 0 },
+      { x: 1, y: 1 },
+    ],
+    style: { ...node().style, stroke: '#123456', strokeWidth: 2, opacity: 0.7, fontWeight: null },
+  };
+  return {
+    ...result(),
+    screens: [
+      {
+        ...screen(),
+        canvas: { width: 390, height: 844 },
+        nodes: [
+          {
+            ...node('group_one'),
+            type: 'group',
+            frame: { x: 24, y: 60, width: 340, height: 600, rotation: -3 },
+            layout: 'free',
+            locked: false,
+            hidden: false,
+            children: [
+              pathNode,
+              {
+                ...node('photo'),
+                type: 'image',
+                frame: { x: 0, y: 50, width: 340, height: 400, rotation: 0 },
+                image: { assetId: 'owned_photo', fit: 'cover' },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+}
+function canvasJob(kind = 'wireframe.generate') {
+  return job({
+    kind,
+    ...(kind === 'wireframe.refine' ? { screenId: 'screen_1' } : {}),
+    context: {
+      id: 'project_1',
+      plan: {},
+      screens: [],
+      assets: [{ id: 'owned_photo', imageUrl: '/api/assets/photo' }],
+    },
+  });
+}
+
+test('freeform output preserves editable geometry and validates shape, bounds and owned image references', () => {
+  const request = canvasJob();
+  const draft = canvasDraft();
+  const normalized = validateResult(draft, request, { canvas: true });
+  assert.deepEqual(normalized.screens[0].canvas, { width: 390, height: 844 });
+  assert.deepEqual(normalized.screens[0].nodes[0].frame, draft.screens[0].nodes[0].frame);
+  assert.deepEqual(
+    normalized.screens[0].nodes[0].children[0].points,
+    draft.screens[0].nodes[0].children[0].points,
+  );
+  assert.equal(normalized.screens[0].nodes[0].locked, false);
+  assert.equal(normalized.screens[0].nodes[0].children[0].style.fontWeight, undefined);
+  assert.deepEqual(draft, canvasDraft(), 'validation must not mutate the proposal');
+  for (const corrupt of [
+    (s) => {
+      delete s.canvas;
+    },
+    (s) => {
+      s.canvas.width = 99;
+    },
+    (s) => {
+      delete s.nodes[0].children[0].frame;
+    },
+    (s) => {
+      s.nodes[0].frame.width = 0;
+    },
+    (s) => {
+      s.nodes[0].frame.x = 20001;
+    },
+    (s) => {
+      s.nodes[0].frame.rotation = 361;
+    },
+    (s) => {
+      s.nodes[0].frame.transform = 'translate(20px)';
+    },
+    (s) => {
+      s.nodes[0].hidden = 'yes';
+    },
+    (s) => {
+      s.nodes[0].children[0].points = [{ x: 0, y: 0 }];
+    },
+    (s) => {
+      s.nodes[0].children[0].points[0].x = -0.1;
+    },
+    (s) => {
+      s.nodes[0].children[0].points = Array.from({ length: 257 }, () => ({ x: 0, y: 0 }));
+    },
+    (s) => {
+      s.nodes[0].children[0].style.opacity = 1.01;
+    },
+    (s) => {
+      s.nodes[0].children[0].style.fontWeight = 900;
+    },
+    (s) => {
+      s.nodes[0].children[0].layout = 'row';
+    },
+    (s) => {
+      s.nodes[0].children[0].type = 'line';
+    },
+    (s) => {
+      s.nodes[0].children[1].image.assetId = 'foreign_photo';
+    },
+    (s) => {
+      s.nodes[0].children[1].image.src = 'https://example.com/photo.png';
+    },
+    (s) => {
+      s.nodes[0].children[1].type = 'rectangle';
+    },
+  ]) {
+    const invalid = canvasDraft();
+    corrupt(invalid.screens[0]);
+    assert.throws(() => validateResult(invalid, request, { canvas: true }), /invalid/);
+  }
+  assert.throws(
+    () =>
+      validateResult(draft, {
+        ...request,
+        context: { ...request.context, assets: [{ id: 'owned_photo', imageUrl: '' }] },
+      }),
+    /invalid/,
+  );
+  const legacy = { ...result(), screens: [screen()] };
+  assert.deepEqual(
+    validateResult(legacy, job({ kind: 'wireframe.generate' })),
+    validateResult(legacy, job({ kind: 'wireframe.generate' }), { canvas: false }),
+  );
+  assert.throws(() => validateResult(draft, request, { canvas: false }), /invalid/);
+  const existing = { ...request, context: { ...request.context, screens: normalized.screens } };
+  assert.throws(() => validateResult(legacy, existing), /invalid/);
+});
+
+test('runner chooses negotiated output schema and never strips an existing canvas for a legacy server', async () =>
+  temporary(async (dir) => {
+    for (const canvas of [false, true]) {
+      const request = canvasJob();
+      const expected = canvas ? canvasDraft() : { ...result(), screens: [screen()] };
+      let schema;
+      const output = await runCodex(request, {
+        workDir: dir,
+        canvas,
+        spawnProcess: spawnFixture(
+          [
+            {
+              type: 'item.completed',
+              item: { type: 'agent_message', text: JSON.stringify(expected) },
+            },
+          ],
+          {
+            onSpawn(_command, args) {
+              schema = JSON.parse(readFileSync(args[args.indexOf('--output-schema') + 1], 'utf8'));
+              assert.equal(args[args.indexOf('--model') + 1], 'gpt-6-astra');
+              assert.ok(args.includes('model_reasoning_effort="medium"'));
+              assert.ok(args.includes('model_context_window=872000'));
+            },
+          },
+        ),
+      });
+      assert.equal(Object.hasOwn(schema.$defs.screen.properties, 'canvas'), canvas);
+      assert.equal(schema.$defs.node.properties.type.enum.includes('path'), canvas);
+      assert.equal(!!output.screens[0].canvas, canvas);
+    }
+    const request = canvasJob('wireframe.refine');
+    request.context.screens = canvasDraft().screens;
+    await assert.rejects(
+      runCodex(request, {
+        workDir: dir,
+        canvas: false,
+        spawnProcess() {
+          assert.fail('Legacy workers must never launch a canvas rewrite');
+        },
+      }),
+      /invalid/,
+    );
+  }));
+
+test('canvas support requires a server acknowledgement and old Workers receive legacy requests', async () => {
+  for (const server of ['canvas', 'legacy', 'no-ack']) {
+    const calls = [];
+    let captured;
+    const client = createClient(config(), {
+      fetcher: async (_url, options) => {
+        const body = JSON.parse(options.body);
+        calls.push(body);
+        if (server === 'legacy' && body.capabilities?.includes(CANVAS_CAPABILITY))
+          return Response.json({ error: 'unknown capability' }, { status: 400 });
+        if (body.action === 'claim')
+          return Response.json({
+            protocolVersion: 1,
+            job: job(),
+            ...(server === 'canvas' ? { canvasVersion: 1 } : {}),
+          });
+        return Response.json(
+          body.action === 'heartbeat' ? { ok: true, cancelled: false } : { ok: true },
+        );
+      },
+    });
+    const claimed = await client.claim();
+    assert.equal(client.canvasSupported, server === 'canvas');
+    await processJob(client, claimed, {
+      run: async (_job, options) => {
+        captured = options.canvas;
+        return result();
+      },
+    });
+    assert.equal(captured, server === 'canvas');
+    if (server === 'legacy') {
+      assert.deepEqual(calls[1].capabilities, [...CAPABILITIES]);
+      await client.claim();
+      assert.deepEqual(calls.at(-1).capabilities, [...CAPABILITIES]);
+    }
+  }
+  const source = canvasJob();
+  source.context.screens = canvasDraft().screens;
+  await assert.rejects(
+    createClient(config(), {
+      fetcher: async () => Response.json({ protocolVersion: 1, job: source }),
+    }).claim(),
+    /protocol/,
+  );
+  await assert.rejects(
+    createClient(config(), {
+      fetcher: async () => Response.json({ protocolVersion: 1, job: null, canvasVersion: 2 }),
+    }).claim(),
+    /protocol/,
+  );
+});
+
+test('ordinary validation failures preserve acknowledged canvas support for later jobs', async () => {
+  for (const rejectedAction of ['heartbeat', 'complete']) {
+    const calls = [];
+    const client = createClient(config(), {
+      fetcher: async (_url, options) => {
+        const body = JSON.parse(options.body);
+        calls.push(body);
+        if (body.action === 'claim')
+          return Response.json({ protocolVersion: 1, canvasVersion: 1, job: job() });
+        return Response.json(
+          { code: 'invalid_result', error: 'Project limit exceeded.' },
+          { status: 400 },
+        );
+      },
+    });
+    const claimed = await client.claim();
+    const options = { telemetry: { stage: 'validating' } };
+    const operation =
+      rejectedAction === 'complete'
+        ? client.complete(claimed, { result: result() }, options)
+        : client.heartbeat(claimed, options);
+    await assert.rejects(operation, (error) => error.status === 400);
+    assert.equal(
+      calls.filter((call) => call.action === rejectedAction).length,
+      1,
+      'Validation failures must not retry with metadata removed',
+    );
+    assert.equal(client.canvasSupported, true);
+    await client.claim();
+    assert.ok(calls.at(-1).capabilities.includes(CANVAS_CAPABILITY));
+    assert.equal(client.canvasSupported, true);
+  }
 });
 
 test('diagram context remains compatible without expanding the AI output contract', () => {
@@ -503,7 +780,7 @@ test('HTTP helper protocol carries dedicated credentials, version, capabilities 
     action: 'claim',
     protocolVersion: 1,
     workerId: 'worker_1',
-    capabilities: [...CAPABILITIES],
+    capabilities: [...CAPABILITIES, CANVAS_CAPABILITY],
   });
   assert.equal(calls[0].options.headers['x-designer-bridge-key'], config().bridgeSecret);
   assert.equal(calls[0].options.headers['CF-Access-Client-Secret'], config().accessClientSecret);

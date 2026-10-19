@@ -39,8 +39,10 @@ import type {
   Project,
   ProjectSummary,
   ProjectVersion,
+  WireNode,
 } from '../shared/model';
 import { PLAN_FIELDS, planCompletion, uid } from '../shared/model';
+import { projectSchema } from '../shared/validation';
 import { api } from './lib/api';
 import { useProject } from './lib/use-project';
 import WireframeWorkspace from './components/WireframeWorkspace';
@@ -93,16 +95,38 @@ export default function App() {
   const {
     project,
     change,
-    replace,
+    replace: replaceProject,
     flush,
     saveState,
     saveError,
     current,
-    undo,
-    redo,
+    undo: undoProject,
+    redo: redoProject,
     canUndo,
     canRedo,
   } = useProject();
+  // Async image transfers must not reinsert layers after a history operation or restore.
+  const editingEpochRef = useRef(0);
+  const [editingEpoch, setEditingEpoch] = useState(0);
+  const invalidateTransfers = useCallback(() => {
+    editingEpochRef.current += 1;
+    setEditingEpoch(editingEpochRef.current);
+  }, []);
+  const replace = useCallback(
+    (...args: Parameters<typeof replaceProject>) => {
+      invalidateTransfers();
+      replaceProject(...args);
+    },
+    [invalidateTransfers, replaceProject],
+  );
+  const undo = useCallback(() => {
+    invalidateTransfers();
+    undoProject();
+  }, [invalidateTransfers, undoProject]);
+  const redo = useCallback(() => {
+    invalidateTransfers();
+    redoProject();
+  }, [invalidateTransfers, redoProject]);
   const [view, setView] = useState<View>('plan');
   const [visualizeRequest, setVisualizeRequest] = useState<{
     projectId: string;
@@ -396,6 +420,39 @@ export default function App() {
       if (!latest || latest.id !== projectId || transitionLock.current) return false;
       if (latest.assets.some((item) => item.id === asset.id)) return true;
       change({ ...latest, assets: [...latest.assets, asset] });
+      return true;
+    },
+    [change, current],
+  );
+  const addCanvasImage = useCallback(
+    (
+      asset: BoardAsset,
+      projectId: string,
+      screenId: string,
+      node: WireNode,
+      expectedEpoch: number,
+    ): boolean => {
+      const latest = current.current;
+      if (
+        !latest ||
+        latest.id !== projectId ||
+        transitionLock.current ||
+        expectedEpoch !== editingEpochRef.current ||
+        !latest.screens.some((screen) => screen.id === screenId && screen.canvas)
+      )
+        return false;
+      const next: Project = {
+        ...latest,
+        assets: latest.assets.some((item) => item.id === asset.id)
+          ? latest.assets
+          : [...latest.assets, asset],
+        screens: latest.screens.map((screen) =>
+          screen.id === screenId ? { ...screen, nodes: [...screen.nodes, node] } : screen,
+        ),
+      };
+      // Commit the asset and its layer together against the latest document.
+      if (!projectSchema.safeParse(next).success) return false;
+      change(next);
       return true;
     },
     [change, current],
@@ -881,6 +938,8 @@ export default function App() {
             <WireframeWorkspace
               key={project.id}
               project={project}
+              onImageAdded={addCanvasImage}
+              editingEpoch={editingEpoch}
               onChange={change}
               onToast={notify}
               onGenerate={generate}
@@ -1843,17 +1902,17 @@ function Connections({
                 first time and contain private connection credentials.
               </p>
               <p>
-                Version 1.0.3 runs Designer on GPT-6 Astra at Medium reasoning through your ChatGPT
-                Codex subscription, with an 872,000-token model context—the current published
-                maximum in Codex. Project input limits still apply. Install this update on the Linux
-                computer running your helper to use these settings.
+                Version 1.1.0 supports freeform canvas designs with GPT-6 Astra at Medium reasoning
+                through your ChatGPT Codex subscription, with an 872,000-token model context—the
+                current published maximum in Codex. Project input limits still apply. Install this
+                update on the Linux computer running your helper to use these settings.
               </p>
               <a
                 className="btn outlined"
                 href="/blai-helper.tar.gz"
-                download="blai-helper-1.0.3.tar.gz"
+                download="blai-helper-1.1.0.tar.gz"
               >
-                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.3
+                <ArrowDownToLine size={15} /> Download BLAI Helper 1.1.0
               </a>{' '}
               <button
                 className="btn outlined"
@@ -1875,15 +1934,15 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
-                <summary>Update BLAI Helper to 1.0.3</summary>
+                <summary>Update BLAI Helper to 1.1.0</summary>
                 <p>
-                  Download BLAI Helper 1.0.3 above, then run these commands in order on the Linux
+                  Download BLAI Helper 1.1.0 above, then run these commands in order on the Linux
                   computer running your helper. Stop if a command reports an error. Your existing
                   profiles and ChatGPT sign-in are reused; no settings download is needed.
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -1892,7 +1951,7 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status`}</code>
                 </pre>
                 <p>
-                  The version command should print <code>BLAI Helper 1.0.3</code>. Installation
+                  The version command should print <code>BLAI Helper 1.1.0</code>. Installation
                   restarts the service for all configured tools. Keep the new extracted directory
                   and its dependencies in place; the service runs from there. Keep the old directory
                   until the new helper connects.
@@ -1906,7 +1965,7 @@ node bin/blai-helper.mjs install
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.3.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"

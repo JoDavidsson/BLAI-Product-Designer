@@ -278,7 +278,32 @@ try {
     ...proposal,
     id: 'fixture_screens',
     kind: 'wireframe.generate',
-    result: { ...result, title: 'Review screens', screens: current.screens },
+    result: {
+      ...result,
+      title: 'Review screens',
+      screens: [
+        ...current.screens,
+        {
+          id: 'fixture_canvas_preview',
+          name: 'Freeform proposal',
+          platform: 'mobile',
+          state: 'default',
+          description: 'Review spatial changes before applying.',
+          canvas: { width: 390, height: 720 },
+          nodes: [
+            {
+              id: 'fixture_preview_shape',
+              type: 'rectangle',
+              name: 'Rotated card',
+              text: '',
+              children: [],
+              style: { background: '#123abc' },
+              frame: { x: 40, y: 80, width: 260, height: 400, rotation: 12 },
+            },
+          ],
+        },
+      ],
+    },
   };
   const stale = {
     ...proposal,
@@ -314,6 +339,30 @@ try {
   );
   await page.locator('.proposal-screen-changes summary').first().click();
   assert.ok(await page.locator('.proposal-structure').first().isVisible());
+  await page
+    .locator('.proposal-screen-changes summary')
+    .filter({ hasText: 'Freeform proposal' })
+    .click();
+  const preview = page.getByRole('img', { name: 'Proposed design for Freeform proposal' });
+  await preview.waitFor({ state: 'visible' });
+  assert.equal(await preview.locator('[inert]').count(), 1, 'Proposal canvas is read-only');
+  assert.equal(
+    await preview
+      .locator('[data-node-id="fixture_preview_shape"]')
+      .evaluate((element) => element.style.transform),
+    'rotate(12deg)',
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await until(
+    async () =>
+      preview.evaluate((element) => {
+        const frame = element.querySelector('.freeform-canvas').getBoundingClientRect();
+        const bounds = element.getBoundingClientRect();
+        return frame.width <= bounds.width + 1;
+      }),
+    'Canvas proposal preview fits narrow review panel',
+  );
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('.proposal-list button').filter({ hasText: 'Old proposal' }).click();
   assert.equal(
     await page.getByRole('button', { name: 'Apply changes', exact: true }).isDisabled(),
