@@ -13,16 +13,36 @@ codex login status
 
 If Codex is missing or needs updating, run `npm install -g @openai/codex`. If it is not signed in with ChatGPT, run `codex login` and choose ChatGPT. The manager checks the login and the CLI features required by the configured tools; it does not sign in for you or copy your Codex login to Cloudflare.
 
+## Update an installed manager to 1.0.1
+
+1. On the Linux computer running the helper, open **Connect Codex** in either app and download **BLAI Helper 1.0.1** into Downloads. The saved filename is `blai-helper-1.0.1.tar.gz`; if the browser adds a suffix, use that actual filename in the command below.
+2. Run these commands in order. Stop if any command reports an error. Existing tool profiles and the ChatGPT sign-in are reused, so no settings download or `add` command is needed.
+
+```sh
+blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
+cd "$blai_helper_dir/blai-helper"
+npm ci --omit=dev
+node bin/blai-helper.mjs doctor
+node bin/blai-helper.mjs install
+"$HOME/.local/bin/blai-helper" --version
+"$HOME/.local/bin/blai-helper" status
+```
+
+The version command should print `BLAI Helper 1.0.1`. Installation restarts the shared service for all configured tools and updates the launcher to this new directory. **Keep the new extracted directory and its installed dependencies in place.** Keep the old release until the new helper connects. Then try a request in each app to check that Codex can complete work. If the new service cannot connect, installation restores the previous service configuration and reports the failure.
+
+Use these update instructions for an existing `blai-helper.service`. Moving from a standalone Writer or Designer helper requires importing its settings first and following the initial migration instructions below.
+
 ## First installation
 
 1. Open **Connect Codex** in Designer on your Linux computer.
-2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper.tar.gz` and `blai-designer-helper.json`.
+2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper-1.0.1.tar.gz` and `blai-designer-helper.json`.
 3. Stop any older helper running in a terminal with **Ctrl+C**. The installer handles known background services during migration.
 4. Open a terminal and run these commands in order. Stop if any command reports an error.
 
 ```sh
 blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"

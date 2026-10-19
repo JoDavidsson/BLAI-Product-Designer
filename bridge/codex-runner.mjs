@@ -213,6 +213,9 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
         final = event.item.text;
       if (event.type === 'turn.failed' || event.type === 'error')
         failure = classifyFailure(event.error?.message ?? event.message ?? '');
+      // Codex reports configuration, deprecation and runtime warnings as
+      // non-fatal error items. Discard their text and allow the turn to continue.
+      if (event.item?.type === 'error' && typeof event.item.message === 'string') return;
       // Fail closed on new or unexpected tool types. Reasoning and final text are
       // the only permitted items; action tools are disabled before execution.
       if (event.item && !['reasoning', 'agent_message', 'todo_list'].includes(event.item.type)) {

@@ -297,6 +297,111 @@ test('runner disables executable tools, protects credentials, returns data and r
     assert.deepEqual(env, { HOME: '/private', HTTPS_PROXY: 'proxy', SSL_CERT_FILE: '/ca' });
   }));
 
+for (const kind of CAPABILITIES) {
+  test(`runner continues ${kind} after non-fatal Codex startup warnings`, async () =>
+    temporary(async (dir) => {
+      const request = job({
+        kind,
+        ...(kind === 'wireframe.refine'
+          ? {
+              screenId: 'screen_1',
+              context: { id: 'project_1', plan: {}, screens: [screen()] },
+            }
+          : {}),
+      });
+      const expected = {
+        ...result(),
+        screens: kind.startsWith('wireframe.') ? [screen()] : null,
+      };
+      let killed = false;
+      const output = await runCodex(request, {
+        workDir: dir,
+        spawnProcess: spawnFixture(
+          [
+            // This is the documented JSONL representation of ConfigWarning,
+            // DeprecationNotice and model-rerouting notifications. These are
+            // non-fatal even when their message mentions a usage limit.
+            {
+              type: 'item.completed',
+              item: {
+                id: 'warning_1',
+                type: 'error',
+                message: 'A configuration key is deprecated.',
+              },
+            },
+            { type: 'thread.started', thread_id: 'fixture_thread' },
+            { type: 'turn.started' },
+            {
+              type: 'item.completed',
+              item: {
+                id: 'warning_2',
+                type: 'error',
+                message: 'Model rerouted after reaching a usage limit.',
+              },
+            },
+            {
+              type: 'item.completed',
+              item: { id: 'result_1', type: 'agent_message', text: JSON.stringify(expected) },
+            },
+            { type: 'turn.completed', usage: {} },
+          ],
+          {
+            onSpawn(_command, _args, _options, child) {
+              const originalKill = child.kill;
+              child.kill = (...args) => {
+                killed = true;
+                return originalKill(...args);
+              };
+            },
+          },
+        ),
+      });
+      assert.equal(killed, false);
+      assert.equal(output.reply, expected.reply);
+      assert.equal(output.plan.problem, expected.plan.problem);
+      assert.equal(output.screens?.[0].id ?? null, expected.screens?.[0].id ?? null);
+      assert.deepEqual(await readdir(dir), []);
+    }));
+}
+
+test('non-fatal warning support preserves fatal errors and rejects malformed warning items', async () =>
+  temporary(async (dir) => {
+    const warning = {
+      type: 'item.completed',
+      item: { type: 'error', message: 'A configuration key is deprecated.' },
+    };
+    const final = {
+      type: 'item.completed',
+      item: { type: 'agent_message', text: JSON.stringify(result()) },
+    };
+    for (const [event, expected] of [
+      [{ type: 'error', message: 'Authentication required: sign in.' }, /login/],
+      [{ type: 'turn.failed', error: { message: 'Rate limit reached.' } }, /limit/],
+      [{ type: 'error', message: 'The server could not complete the request.' }, /unavailable/],
+    ]) {
+      await assert.rejects(
+        runCodex(job(), { workDir: dir, spawnProcess: spawnFixture([warning, event, final]) }),
+        expected,
+      );
+    }
+    for (const item of [
+      { type: 'error' },
+      { type: 'error', message: null },
+      { type: 'error', message: { text: 'not a warning string' } },
+      { type: 'unknown_item', message: 'not a documented warning' },
+      { type: 'command_execution', message: 'not a warning', command: 'anything' },
+    ]) {
+      await assert.rejects(
+        runCodex(job(), {
+          workDir: dir,
+          spawnProcess: spawnFixture([warning, { type: 'item.completed', item }, final]),
+        }),
+        /invalid/,
+      );
+    }
+    assert.deepEqual(await readdir(dir), []);
+  }));
+
 test('runner rejects tool attempts, malformed output, timeouts and cancellation', async () =>
   temporary(async (dir) => {
     await assert.rejects(

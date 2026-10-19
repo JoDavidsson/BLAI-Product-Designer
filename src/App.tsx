@@ -74,6 +74,16 @@ const offlineHelper: HelperStatus = {
 };
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : 'Something went wrong. Please try again.';
+const helperFailureMessages: Record<string, string> = {
+  login: 'Sign in to Codex with ChatGPT on the computer running BLAI Helper, then try again.',
+  limit:
+    'Your Codex account has reached a usage limit. Check your allowance and try again when it resets.',
+  invalid:
+    'Codex could not return a valid result. Update BLAI Helper from Connect Codex, then try again.',
+  timeout: 'Codex took too long to finish. Try a smaller request.',
+  unavailable:
+    'Codex could not finish this request. Check BLAI Helper on your Linux computer, then try again.',
+};
 
 export default function App() {
   const {
@@ -237,7 +247,11 @@ export default function App() {
           for (const job of j.value.jobs) {
             if (!reportedJobs.current.has(job.id) && job.status === 'failed') {
               reportedJobs.current.add(job.id);
-              notify(job.error || 'The AI request could not be completed.');
+              notify(
+                job.error && Object.hasOwn(helperFailureMessages, job.error)
+                  ? helperFailureMessages[job.error]
+                  : job.error || 'The AI request could not be completed.',
+              );
             }
           }
         }
@@ -1807,12 +1821,16 @@ function Connections({
             <section>
               <h3>Download the manager and Designer settings</h3>
               <p>
-                Save both files to Downloads on your Linux computer. The settings contain private
-                connection credentials. If BLAI Helper is already installed, you only need the
-                settings.
+                Save downloads to Downloads on your Linux computer. To update an existing manager,
+                download BLAI Helper only. Designer settings are needed when adding Designer for the
+                first time and contain private connection credentials.
               </p>
-              <a className="btn outlined" href="/blai-helper.tar.gz" download>
-                <ArrowDownToLine size={15} /> Download BLAI Helper
+              <a
+                className="btn outlined"
+                href="/blai-helper.tar.gz"
+                download="blai-helper-1.0.1.tar.gz"
+              >
+                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.1
               </a>{' '}
               <button
                 className="btn outlined"
@@ -1834,6 +1852,30 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
+                <summary>Update BLAI Helper to 1.0.1</summary>
+                <p>
+                  Download BLAI Helper 1.0.1 above, then run these commands in order on the Linux
+                  computer running your helper. Stop if a command reports an error. Your existing
+                  profiles and ChatGPT sign-in are reused; no settings download is needed.
+                </p>
+                <pre>
+                  <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
+cd "$blai_helper_dir/blai-helper"
+npm ci --omit=dev
+node bin/blai-helper.mjs doctor
+node bin/blai-helper.mjs install
+"$HOME/.local/bin/blai-helper" --version
+"$HOME/.local/bin/blai-helper" status`}</code>
+                </pre>
+                <p>
+                  The version command should print <code>BLAI Helper 1.0.1</code>. Installation
+                  restarts the service for all configured tools. Keep the new extracted directory
+                  and its dependencies in place; the service runs from there. Keep the old directory
+                  until the new helper connects.
+                </p>
+              </details>
+              <details>
                 <summary>First time installing BLAI Helper</summary>
                 <p>
                   Open a terminal on this Linux computer and run these commands in order. Stop if a
@@ -1841,7 +1883,7 @@ function Connections({
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
@@ -1850,7 +1892,7 @@ node bin/blai-helper.mjs install --migrate`}</code>
                 </pre>
               </details>
               <details>
-                <summary>BLAI Helper is already installed</summary>
+                <summary>Add Designer to an installed manager</summary>
                 <p>
                   Add Designer to the same manager. Installation restarts the service; your other
                   configured tools reconnect afterward.
@@ -1863,7 +1905,8 @@ node bin/blai-helper.mjs install --migrate`}</code>
               </details>
               <p>
                 To combine an older Writer helper too, import its settings before migration using
-                the full instructions below. Each tool keeps its own private connection settings.
+                the full instructions below. Keep the extracted helper directory in place after
+                installation. Each tool keeps its own private connection settings.
               </p>
               <a
                 className="text-button"
