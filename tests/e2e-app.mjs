@@ -191,7 +191,7 @@ try {
   assert.equal((await get(newId)).screens.length, 0);
   await page.getByLabel('Message Codex', { exact: true }).fill('Help me define the audience.');
   await page.getByRole('button', { name: 'Send to Codex', exact: true }).click();
-  await page.getByRole('heading', { name: 'Codex Helper', exact: true }).waitFor();
+  await page.getByRole('heading', { name: 'BLAI Helper', exact: true }).waitFor();
   assert.equal((await get(newId)).chat.length, 0, 'offline helper must not fabricate a reply');
   await page.getByRole('button', { name: 'Product plan', exact: true }).click();
   assert.equal(
