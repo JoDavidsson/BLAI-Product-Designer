@@ -38,6 +38,57 @@ const find = (nodes, id) => {
   }
 };
 const node = (id) => page.locator(`[data-node-id="${id}"]`);
+const marginCard = (id) => page.locator(`[data-comment-card="${id}"]`);
+async function assertCommentGeometry(comment, description) {
+  await expect(marginCard(comment.id)).toBeVisible();
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          ({ id, target }) => {
+            const frame = document.querySelector('.wf-artboard');
+            const anchor =
+              target.kind === 'node'
+                ? [...frame.querySelectorAll('[data-node-id]')].find(
+                    (item) => item.dataset.nodeId === target.nodeId,
+                  )
+                : frame;
+            const pin = [...frame.querySelectorAll('.wf-comment-pin')].find(
+              (item) => item.dataset.commentId === id,
+            );
+            const card = [...document.querySelectorAll('[data-comment-card]')].find(
+              (item) => item.dataset.commentCard === id,
+            );
+            const line = [...document.querySelectorAll('.wf-comment-connectors path')].find(
+              (item) => item.dataset.commentId === id,
+            );
+            if (!anchor || !pin || !card || !line) return 9999;
+            const bounds = anchor.getBoundingClientRect();
+            const pinBounds = pin.getBoundingClientRect();
+            const cardBounds = card.getBoundingClientRect();
+            const start = line.getPointAtLength(0).matrixTransform(line.getScreenCTM());
+            const end = line
+              .getPointAtLength(line.getTotalLength())
+              .matrixTransform(line.getScreenCTM());
+            const x = bounds.left + bounds.width * target.x;
+            const y = bounds.top + bounds.height * target.y;
+            return Math.max(
+              Math.abs(start.x - x),
+              Math.abs(start.y - y),
+              Math.abs(pinBounds.left + pinBounds.width / 2 - x),
+              Math.abs(pinBounds.top + pinBounds.height / 2 - y),
+              Math.abs(end.x - cardBounds.left),
+              end.y < cardBounds.top || end.y > cardBounds.bottom ? 9999 : 0,
+              cardBounds.left < frame.getBoundingClientRect().right + 30 ? 9999 : 0,
+              getComputedStyle(line).strokeDasharray === 'none' ? 9999 : 0,
+            );
+          },
+          { id: comment.id, target: comment.target },
+        ),
+      { message: description },
+    )
+    .toBeLessThan(2);
+}
 
 try {
   await page.addInitScript((id) => localStorage.setItem('blai-project', id), initial.id);
@@ -126,8 +177,15 @@ try {
   assert.equal(annotation.target.nodeId, nested.id);
   assert.equal(annotation.target.x, 0.8);
   assert.equal(annotation.target.y, 0.5);
-  await expect(node(nested.id).locator('.annotation-pin')).toBeVisible();
-  await expect(node(nested.id).locator('.annotation-leaders path')).toHaveCount(1);
+  await expect(node(nested.id).locator('.wf-comment-pin')).toBeVisible();
+  await expect(
+    page.locator(`.wf-comment-connectors path[data-comment-id="${annotation.id}"]`),
+  ).toHaveCount(1);
+  await expect(page.locator('.wf-artboard .annotation-label')).toHaveCount(0);
+  await assertCommentGeometry(
+    annotation,
+    'Comment card sits in the margin, with its dotted leader on the saved anchor',
+  );
   await page.getByRole('button', { name: 'Close comments', exact: true }).click();
   await expect(
     page.locator('.wf-inspector-tabs').getByRole('button', { name: 'Properties', exact: true }),
@@ -137,7 +195,7 @@ try {
   assert.equal(find(screen(state).nodes, card.id).children[1].id, nested.id);
   assert.equal(state.comments.find((item) => item.id === annotation.id).target.nodeId, nested.id);
   const nodeBounds = await node(nested.id).boundingBox();
-  const pinBounds = await node(nested.id).locator('.annotation-pin').boundingBox();
+  const pinBounds = await node(nested.id).locator('.wf-comment-pin').boundingBox();
   assert(nodeBounds && pinBounds, 'Element and pin have bounds');
   assert(
     Math.abs(pinBounds.x + pinBounds.width / 2 - nodeBounds.x - nodeBounds.width * 0.8) < 2,
@@ -149,6 +207,95 @@ try {
   );
   report.push(
     'Element annotation stores normalized coordinates, draws dotted leader, and follows reordering',
+  );
+  await assertCommentGeometry(annotation, 'Margin connector follows component reordering');
+  const originalCardWidth = (await marginCard(annotation.id).boundingBox()).width;
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await assertCommentGeometry(annotation, 'Margin connector follows canvas zoom');
+  assert(
+    Math.abs((await marginCard(annotation.id).boundingBox()).width - originalCardWidth) < 1,
+    'Comment text stays at readable, unscaled width when the artboard zooms',
+  );
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await assertCommentGeometry(annotation, 'Margin connector follows viewport resize');
+  await page.locator('.wf-canvas-scroll').evaluate((element) => {
+    element.scrollTop += 170;
+    element.scrollLeft += 90;
+  });
+  await assertCommentGeometry(
+    annotation,
+    'Comment and connector share the scrolled canvas coordinates',
+  );
+  await page.setViewportSize({ width: 1600, height: 1050 });
+
+  // Nearby annotations stack in the margin instead of covering each other or the design.
+  await node(nested.id).locator('p').click();
+  await page.getByRole('button', { name: 'Leave a note on this element' }).click();
+  await page
+    .getByRole('textbox', { name: 'New comment', exact: true })
+    .fill(
+      'A second thought at the same location. Keep both notes readable when their anchors overlap.\nThis extra context makes the card taller.',
+    );
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  state = await save();
+  const nearby = state.comments.find((item) => item.body.startsWith('A second thought'));
+  await assertCommentGeometry(
+    nearby,
+    'A second comment keeps its own connector at the shared anchor',
+  );
+  const firstCard = await marginCard(annotation.id).boundingBox();
+  const secondCard = await marginCard(nearby.id).boundingBox();
+  assert(secondCard.y >= firstCard.y + firstCard.height + 8, 'Nearby comment cards do not overlap');
+  await marginCard(nearby.id).getByRole('button', { name: 'Open thread', exact: true }).click();
+  const thread = page.locator(`#comment-${nearby.id}`);
+  await expect(thread).toHaveClass(/is-selected/);
+  await thread.getByRole('button', { name: 'Reply', exact: true }).click();
+  await thread
+    .getByRole('textbox', { name: 'Reply to comment' })
+    .fill('Reply from the margin thread.');
+  await thread.getByRole('button', { name: 'Send reply', exact: true }).click();
+  state = await save();
+  assert.equal(state.comments.find((item) => item.id === nearby.id).replies.length, 1);
+  await page.getByRole('button', { name: 'Close comments', exact: true }).click();
+  await page
+    .locator('.wf-inspector-tabs')
+    .getByRole('button', { name: /^Comments/ })
+    .click();
+  await page.getByRole('button', { name: 'Add a comment', exact: true }).click();
+  await page
+    .getByRole('textbox', { name: 'New comment', exact: true })
+    .fill('A screen-level note in the right margin.');
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  state = await save();
+  const screenNote = state.comments.find((item) => item.body.startsWith('A screen-level note'));
+  assert.equal(screenNote.target.kind, 'screen');
+  await assertCommentGeometry(
+    screenNote,
+    'Screen-level comments use the artboard coordinate space',
+  );
+  await page.screenshot({ path: '/tmp/blai-wireframe-comments-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await marginCard(nearby.id).scrollIntoViewIfNeeded();
+  await assertCommentGeometry(
+    nearby,
+    'Narrow-screen horizontal panning keeps comment anchors connected',
+  );
+  assert(
+    await page.evaluate(() => document.body.scrollWidth <= innerWidth + 1),
+    'Margin scrolls inside canvas without widening the mobile page',
+  );
+  await page.screenshot({ path: '/tmp/blai-wireframe-comments-mobile.png', fullPage: true });
+  await page.setViewportSize({ width: 1600, height: 1050 });
+  await marginCard(nearby.id).getByRole('button', { name: 'Resolve', exact: true }).click();
+  state = await save();
+  assert.equal(state.comments.find((item) => item.id === nearby.id).status, 'resolved');
+  await expect(marginCard(nearby.id)).toHaveCount(0);
+  await expect(
+    page.locator(`.wf-comment-connectors path[data-comment-id="${nearby.id}"]`),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Close comments', exact: true }).click();
+  report.push(
+    'Right-margin cards stay readable and separate; anchor geometry survives zoom, scrolling, resize and mobile panning; screen notes, replies and resolving work',
   );
 
   // Existing content can move into an empty container without losing comments.
@@ -167,7 +314,7 @@ try {
   state = await save();
   assert.equal(find(screen(state).nodes, emptyColumn.id).children[0].id, nested.id);
   assert.equal(state.comments.find((item) => item.id === annotation.id).target.nodeId, nested.id);
-  await expect(node(nested.id).locator('.annotation-pin')).toBeVisible();
+  await expect(node(nested.id).locator('.wf-comment-pin')).toBeVisible();
   await page.getByRole('button', { name: 'Select parent container', exact: true }).click();
   await page.getByLabel('Container layout', { exact: true }).selectOption('row');
   state = await save();

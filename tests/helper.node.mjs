@@ -6,7 +6,16 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, readdir, rm, readFile, writeFile, stat, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { CAPABILITIES, PLAN_KEYS, validateJob, validateResult } from '../bridge/schema.mjs';
+import {
+  CAPABILITIES,
+  PLAN_KEYS,
+  validateJob,
+  validateResult,
+  validateTelemetry,
+  usageFromCodex,
+  DESIGNER_HELPER_VERSION,
+} from '../bridge/schema.mjs';
+import { helperVersion } from '../bridge/start.mjs';
 import { runCodex, runnerEnvironment } from '../bridge/codex-runner.mjs';
 import { bridgeHeaders, loadConfig, saveConfig, validateConfig } from '../bridge/config.mjs';
 import { createClient, processJob } from '../bridge/client.mjs';
@@ -717,3 +726,244 @@ test('Linux setup is noninteractive, requires subscription login and keeps a sep
       /line breaks/,
     );
   }));
+
+test('telemetry accepts only bounded reported counts and closed progress stages', () => {
+  assert.deepEqual(
+    usageFromCodex({
+      input_tokens: 123,
+      output_tokens: 0,
+      cached_input_tokens: 20,
+      secret: 'discard',
+    }),
+    {
+      inputTokens: 123,
+      cachedInputTokens: 20,
+      outputTokens: 0,
+    },
+  );
+  assert.equal(usageFromCodex({}), undefined);
+  assert.equal(
+    usageFromCodex({ input_tokens: -1, output_tokens: '20', cached_input_tokens: Infinity }),
+    undefined,
+  );
+  assert.equal(usageFromCodex({ input_tokens: Number.MAX_SAFE_INTEGER + 1 }), undefined);
+  assert.deepEqual(validateTelemetry({ stage: 'model-started', usage: { outputTokens: 0 } }), {
+    stage: 'model-started',
+    usage: { outputTokens: 0 },
+  });
+  for (const value of [
+    {},
+    { stage: 'thinking about private contents' },
+    { stage: 'launching', text: 'private' },
+    { usage: {} },
+    { usage: { outputTokens: -1 } },
+    { usage: { inputTokens: 1.5 } },
+    { usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 } },
+    { usage: { outputTokens: 4, privateContent: 'discard' } },
+    { usage: null },
+  ])
+    assert.throws(() => validateTelemetry(value), /protocol/);
+});
+
+test('runner reports real CLI stages and completed-turn usage without model text or invented counts', async () =>
+  temporary(async (dir) => {
+    const telemetry = [];
+    await runCodex(job(), {
+      workDir: dir,
+      onTelemetry: (value) => telemetry.push(value),
+      spawnProcess: spawnFixture([
+        { type: 'thread.started', thread_id: 'fixture' },
+        { type: 'turn.started' },
+        { type: 'item.completed', item: { type: 'reasoning', text: 'private reasoning' } },
+        { type: 'item.completed', item: { type: 'error', message: 'private warning' } },
+        { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(result()) } },
+        {
+          type: 'turn.completed',
+          usage: {
+            input_tokens: 120,
+            cached_input_tokens: 20,
+            output_tokens: 30,
+            private: 'never send',
+          },
+        },
+      ]),
+    });
+    assert.deepEqual(telemetry, [
+      { stage: 'launching' },
+      { stage: 'model-started' },
+      { stage: 'response-received' },
+      { usage: { inputTokens: 120, cachedInputTokens: 20, outputTokens: 30 } },
+      { stage: 'validating' },
+    ]);
+    assert.equal(JSON.stringify(telemetry).includes('private'), false);
+    const missing = [];
+    await runCodex(job(), {
+      workDir: dir,
+      onTelemetry: (value) => missing.push(value),
+      spawnProcess: spawnFixture([
+        { type: 'item.completed', item: { type: 'agent_message', text: JSON.stringify(result()) } },
+      ]),
+    });
+    assert.ok(missing.every((value) => !Object.hasOwn(value, 'usage')));
+  }));
+
+test('client carries validated telemetry and release version without changing the protocol', async () => {
+  const calls = [];
+  const client = createClient(config(), {
+    workerId: 'worker_1',
+    helperVersion: '1.0.2',
+    fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      return Response.json(
+        body.action === 'claim'
+          ? { protocolVersion: 1, job: null }
+          : body.action === 'heartbeat'
+            ? { ok: true, cancelled: false }
+            : { ok: true },
+      );
+    },
+  });
+  await client.claim();
+  const telemetry = { stage: 'validating', usage: { inputTokens: 100, outputTokens: 0 } };
+  await client.heartbeat(job(), { telemetry });
+  await client.complete(job(), { error: 'invalid' }, { telemetry });
+  assert.equal(calls[0].helperVersion, '1.0.2');
+  assert.equal(calls[0].protocolVersion, 1);
+  assert.deepEqual(calls[1].telemetry, telemetry);
+  assert.deepEqual(calls[2].telemetry, telemetry);
+  assert.equal(calls[1].leaseToken, job().leaseToken);
+  const count = calls.length;
+  await assert.rejects(
+    client.heartbeat(job(), { telemetry: { stage: 'private text' } }),
+    /protocol/,
+  );
+  await assert.rejects(
+    client.complete(job(), { error: 'invalid' }, { telemetry: null }),
+    /protocol/,
+  );
+  assert.equal(calls.length, count);
+  assert.throws(() => createClient(config(), { helperVersion: 'private\nversion' }), /protocol/);
+  assert.equal(await helperVersion(), DESIGNER_HELPER_VERSION);
+});
+
+test('new helpers fall back once to legacy protocol-1 bodies without optional metadata', async () => {
+  const calls = [];
+  const client = createClient(config(), {
+    helperVersion: '1.0.2',
+    fetcher: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      if (body.helperVersion || body.telemetry)
+        return Response.json({ error: 'unknown field' }, { status: 400 });
+      return Response.json(
+        body.action === 'claim'
+          ? { protocolVersion: 1, job: null }
+          : body.action === 'heartbeat'
+            ? { ok: true, cancelled: false }
+            : { ok: true },
+      );
+    },
+  });
+  await client.claim();
+  await client.heartbeat(job(), { telemetry: { stage: 'launching' } });
+  await client.complete(job(), { error: 'invalid' }, { telemetry: { usage: { outputTokens: 8 } } });
+  await client.claim();
+  assert.equal(calls.length, 5);
+  assert.equal(calls[0].helperVersion, '1.0.2');
+  assert.ok(
+    calls
+      .slice(1)
+      .every(
+        (value) => !Object.hasOwn(value, 'helperVersion') && !Object.hasOwn(value, 'telemetry'),
+      ),
+  );
+  let unauthorizedCalls = 0;
+  const unauthorized = createClient(config(), {
+    helperVersion: '1.0.2',
+    fetcher: async () => {
+      unauthorizedCalls++;
+      return Response.json({ error: 'denied' }, { status: 403 });
+    },
+  });
+  await assert.rejects(unauthorized.claim(), (error) => error.status === 403);
+  assert.equal(unauthorizedCalls, 1);
+});
+
+test('job progress is sent immediately, serialized, and retained through completion', async () => {
+  const calls = [];
+  let releaseFirst;
+  let inFlight = 0;
+  let peak = 0;
+  const client = {
+    async heartbeat(_job, options) {
+      calls.push({ action: 'heartbeat', telemetry: structuredClone(options.telemetry) });
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      if (calls.length === 1)
+        await new Promise((resolve) => {
+          releaseFirst = resolve;
+        });
+      inFlight--;
+      return { ok: true, cancelled: false };
+    },
+    async complete(_job, outcome, options) {
+      calls.push({
+        action: 'complete',
+        telemetry: structuredClone(options.telemetry),
+        error: outcome.error,
+      });
+    },
+  };
+  const status = await processJob(client, job(), {
+    heartbeatMs: 60_000,
+    run: async (_job, { onTelemetry }) => {
+      onTelemetry({ stage: 'launching' });
+      assert.equal(calls.length, 1, 'launch is visible before the ordinary heartbeat interval');
+      onTelemetry({ stage: 'model-started' });
+      onTelemetry({ usage: { inputTokens: 100, outputTokens: 25 } });
+      onTelemetry({ stage: 'validating' });
+      onTelemetry({ stage: 'launching', usage: { inputTokens: 1 } });
+      releaseFirst();
+      throw new Error('invalid');
+    },
+  });
+  assert.equal(status, 'invalid');
+  assert.equal(peak, 1);
+  assert.deepEqual(calls.at(-1), {
+    action: 'complete',
+    telemetry: { stage: 'validating', usage: { inputTokens: 100, outputTokens: 25 } },
+    error: 'invalid',
+  });
+});
+
+test('cancellation during a telemetry heartbeat cannot publish a result or later telemetry', async () => {
+  let complete = 0;
+  let heartbeats = 0;
+  let lateTelemetry;
+  const status = await processJob(
+    {
+      async heartbeat() {
+        heartbeats++;
+        return { ok: true, cancelled: true };
+      },
+      async complete() {
+        complete++;
+      },
+    },
+    job(),
+    {
+      run: async (_job, { onTelemetry }) => {
+        lateTelemetry = onTelemetry;
+        onTelemetry({ stage: 'launching' });
+        await new Promise((resolve) => setImmediate(resolve));
+        return result();
+      },
+    },
+  );
+  assert.equal(status, 'cancelled');
+  assert.equal(complete, 0);
+  const previous = heartbeats;
+  lateTelemetry({ stage: 'validating' });
+  assert.equal(heartbeats, previous);
+});

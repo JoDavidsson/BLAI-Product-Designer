@@ -47,6 +47,7 @@ import WireframeWorkspace from './components/WireframeWorkspace';
 import BoardWorkspace from './components/BoardWorkspace';
 import AnnotationPanel from './components/AnnotationPanel';
 import ProposalChanges from './components/ProposalChanges';
+import AIActivity, { jobStageLabel } from './components/AIActivity';
 import type { OverviewSource } from '../shared/overview';
 const ProductOverview = lazy(() => import('./components/ProductOverview'));
 
@@ -78,12 +79,15 @@ const helperFailureMessages: Record<string, string> = {
   login: 'Sign in to Codex with ChatGPT on the computer running BLAI Helper, then try again.',
   limit:
     'Your Codex account has reached a usage limit. Check your allowance and try again when it resets.',
-  invalid:
-    'Codex could not return a valid result. Update BLAI Helper from Connect Codex, then try again.',
+  invalid: 'Codex returned a result Designer could not use. Try a smaller, more focused request.',
   timeout: 'Codex took too long to finish. Try a smaller request.',
   unavailable:
     'Codex could not finish this request. Check BLAI Helper on your Linux computer, then try again.',
 };
+const jobFailureMessage = (job: AIJob) =>
+  job.error && Object.hasOwn(helperFailureMessages, job.error)
+    ? helperFailureMessages[job.error]
+    : job.error || 'The AI request could not be completed.';
 
 export default function App() {
   const {
@@ -192,6 +196,7 @@ export default function App() {
   const [exportResult, setExportResult] = useState('');
   const initialized = useRef(false);
   const reportedJobs = useRef(new Set<string>());
+  const observedJobStates = useRef(new Map<string, AIJob['status']>());
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -245,13 +250,19 @@ export default function App() {
         if (j.status === 'fulfilled') {
           setJobs(j.value.jobs);
           for (const job of j.value.jobs) {
+            const previousStatus = observedJobStates.current.get(job.id);
+            observedJobStates.current.set(job.id, job.status);
+            if (
+              (previousStatus === 'queued' || previousStatus === 'running') &&
+              job.status === 'completed'
+            ) {
+              notify(
+                'Your proposal is ready. Choose Review proposal to see the suggested changes.',
+              );
+            }
             if (!reportedJobs.current.has(job.id) && job.status === 'failed') {
               reportedJobs.current.add(job.id);
-              notify(
-                job.error && Object.hasOwn(helperFailureMessages, job.error)
-                  ? helperFailureMessages[job.error]
-                  : job.error || 'The AI request could not be completed.',
-              );
+              notify(jobFailureMessage(job));
             }
           }
         }
@@ -450,6 +461,16 @@ export default function App() {
     } catch (error) {
       notify(errorMessage(error));
       return false;
+    }
+  }
+  async function cancelJob(job: AIJob) {
+    try {
+      await api.cancel(job.projectId, job.id);
+      const result = await api.jobs(job.projectId);
+      if (current.current?.id !== job.projectId) return;
+      setJobs(result.jobs);
+    } catch (error) {
+      notify(errorMessage(error));
     }
   }
   async function openVersions() {
@@ -808,6 +829,18 @@ export default function App() {
             </button>
           </div>
         )}
+        <AIActivity
+          key={project.id}
+          jobs={jobs}
+          proposals={proposals}
+          helper={helper}
+          failureMessage={jobFailureMessage}
+          onCancel={cancelJob}
+          onReview={(proposalId) => {
+            setSelectedProposal(proposalId);
+            setModal('proposals');
+          }}
+        />
         <main className={`main-content view-${view}`}>
           {view === 'plan' && (
             <Planner
@@ -829,18 +862,7 @@ export default function App() {
               helper={helper}
               activeJobs={activeJobs}
               completion={completion}
-              onCancel={async (job) => {
-                try {
-                  await api.cancel(project.id, job.id);
-                  setJobs((previous) =>
-                    previous.map((item) =>
-                      item.id === job.id ? { ...item, status: 'cancelled' } : item,
-                    ),
-                  );
-                } catch (error) {
-                  notify(errorMessage(error));
-                }
-              }}
+              onCancel={(job) => void cancelJob(job)}
               onReview={() => setModal('proposals')}
               pending={pending.length}
             />
@@ -927,12 +949,6 @@ export default function App() {
             <Connections helper={helper} session={session} onToast={notify} />
           )}
         </main>
-        {activeJobs.length > 0 && view !== 'plan' && (
-          <button className="activity-float" onClick={() => setView('plan')}>
-            <Loader2 size={16} className="spin" /> Codex is shaping your idea{' '}
-            <ArrowUpRight size={14} />
-          </button>
-        )}
       </div>
       {toast && (
         <div className="toast" role="status">
@@ -1452,9 +1468,7 @@ function Planner({
             <div key={job.id} className="job-card">
               <Loader2 className="spin" size={15} />
               <div>
-                <strong>
-                  {job.status === 'running' ? 'Codex is thinking…' : 'Waiting for your helper…'}
-                </strong>
+                <strong>{jobStageLabel(job)}</strong>
                 <small>{job.kind.replaceAll('.', ' · ')}</small>
               </div>
               <button aria-label="Cancel AI request" onClick={() => onCancel(job)}>
@@ -1795,7 +1809,10 @@ function Connections({
           </span>
           <div>
             <h2>BLAI Helper</h2>
-            <p>One manager. Your existing ChatGPT sign-in.</p>
+            <p>
+              One manager. Your existing ChatGPT sign-in.
+              {helper.helperVersion ? ` Connected version: ${helper.helperVersion}.` : ''}
+            </p>
           </div>
           <span className={`pill ${helper.online ? 'green' : ''}`}>
             <span className="status-dot" />
@@ -1823,14 +1840,15 @@ function Connections({
               <p>
                 Save downloads to Downloads on your Linux computer. To update an existing manager,
                 download BLAI Helper only. Designer settings are needed when adding Designer for the
-                first time and contain private connection credentials.
+                first time and contain private connection credentials. Version 1.0.2 adds request
+                stages, helper check-ins, and token usage when Codex reports it.
               </p>
               <a
                 className="btn outlined"
                 href="/blai-helper.tar.gz"
-                download="blai-helper-1.0.1.tar.gz"
+                download="blai-helper-1.0.2.tar.gz"
               >
-                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.1
+                <ArrowDownToLine size={15} /> Download BLAI Helper 1.0.2
               </a>{' '}
               <button
                 className="btn outlined"
@@ -1852,15 +1870,15 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
-                <summary>Update BLAI Helper to 1.0.1</summary>
+                <summary>Update BLAI Helper to 1.0.2</summary>
                 <p>
-                  Download BLAI Helper 1.0.1 above, then run these commands in order on the Linux
+                  Download BLAI Helper 1.0.2 above, then run these commands in order on the Linux
                   computer running your helper. Stop if a command reports an error. Your existing
                   profiles and ChatGPT sign-in are reused; no settings download is needed.
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -1869,7 +1887,7 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status`}</code>
                 </pre>
                 <p>
-                  The version command should print <code>BLAI Helper 1.0.1</code>. Installation
+                  The version command should print <code>BLAI Helper 1.0.2</code>. Installation
                   restarts the service for all configured tools. Keep the new extracted directory
                   and its dependencies in place; the service runs from there. Keep the old directory
                   until the new helper connects.
@@ -1883,7 +1901,7 @@ node bin/blai-helper.mjs install
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.0.1.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.0.2.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"

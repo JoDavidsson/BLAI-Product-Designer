@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createProject, type AIResult } from '../shared/model';
-import { validateResultForJob } from '../worker/jobs';
+import { bridgeSchema, validateResultForJob } from '../worker/jobs';
 
 const result: AIResult = {
   title: 'One more requirement',
@@ -29,5 +29,35 @@ describe('AI proposal composition', () => {
     // A review with no additional requirements remains useful at capacity.
     expect(() => validateResultForJob({ ...result, requirements: [] }, job)).not.toThrow();
     expect(project.requirements).toHaveLength(500);
+  });
+});
+
+describe('optional helper telemetry protocol', () => {
+  const claim = {
+    action: 'claim',
+    protocolVersion: 1,
+    workerId: 'helper_test',
+    capabilities: ['plan.assist'],
+  };
+  it('accepts old claims and bounded semantic versions without allowing arbitrary metadata', () => {
+    expect(bridgeSchema.safeParse(claim).success).toBe(true);
+    for (const helperVersion of ['1.0.2', '1.0.2-preview.1'])
+      expect(bridgeSchema.safeParse({ ...claim, helperVersion }).success).toBe(true);
+    for (const helperVersion of [
+      '',
+      'latest',
+      '1.0',
+      '1.0.2\n',
+      '1.0.2+build',
+      `1.0.2-${'a'.repeat(60)}`,
+    ])
+      expect(bridgeSchema.safeParse({ ...claim, helperVersion }).success).toBe(false);
+    expect(
+      bridgeSchema.safeParse({
+        ...claim,
+        helperVersion: '1.0.2',
+        telemetry: { stage: 'launching' },
+      }).success,
+    ).toBe(false);
   });
 });

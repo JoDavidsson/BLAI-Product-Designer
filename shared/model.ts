@@ -184,6 +184,25 @@ export interface AIProposal {
   status: 'pending' | 'applied' | 'dismissed';
   result: AIResult;
 }
+export const JOB_PROGRESS_STAGES = [
+  'launching',
+  'model-started',
+  'response-received',
+  'validating',
+] as const;
+export type JobProgressStage = (typeof JOB_PROGRESS_STAGES)[number];
+/** Omitted counts are unknown; reported zeroes are meaningful. */
+export interface AIUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+}
+export interface JobTelemetry {
+  stage?: JobProgressStage;
+  usage?: AIUsage;
+}
 export interface AIJob {
   id: string;
   projectId: string;
@@ -193,6 +212,13 @@ export interface AIJob {
   instruction: string;
   screenId?: string;
   createdAt: string;
+  startedAt?: string;
+  lastHeartbeatAt?: string;
+  completedAt?: string;
+  progressStage?: JobProgressStage;
+  progressUpdatedAt?: string;
+  usage?: AIUsage;
+  helperVersion?: string;
   error?: string;
   proposalId?: string;
 }
@@ -200,6 +226,7 @@ export interface HelperStatus {
   online: boolean;
   lastSeen: string | null;
   workerId: string | null;
+  helperVersion?: string | null;
   protocolVersion: number;
   capabilities: string[];
   imageGeneration: false;

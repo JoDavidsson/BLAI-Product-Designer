@@ -1,11 +1,18 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { handleRequest } from '../worker/index';
 import { getProject, newProject } from '../worker/projects';
-import { JOB_KINDS, type AIJob, type AIResult, type Project } from '../shared/model';
+import {
+  JOB_KINDS,
+  type AIJob,
+  type AIResult,
+  type HelperStatus,
+  type Project,
+} from '../shared/model';
+import { bridgeOperation, helperStatus, listJobs } from '../worker/jobs';
 import type { Env } from '../worker/types';
 
 let mf: Miniflare;
@@ -44,6 +51,48 @@ async function project() {
 async function bridge(data: unknown) {
   return request('/api/codex', 'POST', data, { 'x-designer-bridge-key': 'integration-only-key' });
 }
+async function claimedJob(workerId: string, helperVersion?: string) {
+  const p = await project();
+  const claimInput = {
+    action: 'claim',
+    protocolVersion: 1,
+    workerId,
+    capabilities: JOB_KINDS,
+    ...(helperVersion ? { helperVersion } : {}),
+  };
+  await payload(await bridge(claimInput));
+  await payload(
+    await request(`/api/projects/${p.id}/jobs`, 'POST', {
+      kind: 'plan.assist',
+      instruction: 'Clarify this plan',
+    }),
+  );
+  const claim = await payload<{ protocolVersion: number; job: { id: string; leaseToken: string } }>(
+    await bridge(claimInput),
+  );
+  expect(Object.keys(claim).sort()).toEqual(['job', 'protocolVersion']);
+  expect(Object.keys(claim.job).sort()).toEqual([
+    'baseRevision',
+    'context',
+    'id',
+    'instruction',
+    'kind',
+    'leaseExpiresAt',
+    'leaseToken',
+    'projectId',
+  ]);
+  const lease = {
+    protocolVersion: 1 as const,
+    workerId,
+    jobId: claim.job.id,
+    leaseToken: claim.job.leaseToken,
+  };
+  const read = async () =>
+    (await payload<{ jobs: AIJob[] }>(await request(`/api/projects/${p.id}/jobs`))).jobs.find(
+      (job) => job.id === claim.job.id,
+    )!;
+  return { p, lease, read };
+}
 const result: AIResult = {
   title: 'Clarify the problem',
   summary: 'Plan proposal',
@@ -64,7 +113,7 @@ describe('Worker with real D1 and R2 bindings', () => {
         modules: true,
         script: 'export default { fetch() { return new Response("test"); } };',
         compatibilityDate: '2026-01-15',
-        d1Databases: ['DB'],
+        d1Databases: ['DB', 'LEGACY_DB'],
         r2Buckets: ['ASSETS_BUCKET'],
         unsafeDevRegistryPath: registryPath,
       }),
@@ -75,21 +124,85 @@ describe('Worker with real D1 and R2 bindings', () => {
       DEV_AUTH: 'local',
       DESIGNER_BRIDGE_SECRET: 'integration-only-key',
     };
-    const migration = await readFile(
-      new URL('../migrations/0001_initial.sql', import.meta.url),
-      'utf8',
-    );
-    await env.DB.batch(
-      migration
-        .split(';')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map((sql) => env.DB.prepare(sql)),
-    );
+    const migrationsUrl = new URL('../migrations/', import.meta.url);
+    for (const file of (await readdir(migrationsUrl))
+      .filter((name) => /^\d+.*\.sql$/.test(name))
+      .sort()) {
+      const migration = await readFile(new URL(file, migrationsUrl), 'utf8');
+      await env.DB.batch(
+        migration
+          .split(';')
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((sql) => env.DB.prepare(sql)),
+      );
+    }
   }, 30000);
   afterAll(async () => {
     await mf?.dispose();
     if (registryPath) await rm(registryPath, { recursive: true, force: true });
+  });
+  it('adds telemetry to a populated legacy database without rewriting jobs, projects or helpers', async () => {
+    const legacy = { ...env, DB: (await mf.getD1Database('LEGACY_DB')) as unknown as D1Database };
+    const migrate = async (file: string) => {
+      const sql = await readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
+      await legacy.DB.batch(
+        sql
+          .split(';')
+          .map((statement) => statement.trim())
+          .filter(Boolean)
+          .map((statement) => legacy.DB.prepare(statement)),
+      );
+    };
+    await migrate('0001_initial.sql');
+    const owner = 'legacy@example.com';
+    const p = await newProject(legacy, owner, 'Existing project');
+    const now = Date.now();
+    await legacy.DB.batch([
+      legacy.DB.prepare(
+        'INSERT INTO helpers(owner,worker_id,protocol_version,capabilities,last_seen) VALUES(?,?,1,?,?)',
+      ).bind(owner, 'legacy_worker', JSON.stringify(JOB_KINDS), now),
+      legacy.DB.prepare(
+        "INSERT INTO jobs(id,project_id,owner,kind,base_revision,status,instruction,context,created_at,worker_id,lease_token,lease_expires_at,started_at) VALUES(?,?,?,'plan.assist',1,'running','Legacy request',?,?,?,'legacy_lease',?,?)",
+      ).bind(
+        'legacy_job',
+        p.id,
+        owner,
+        JSON.stringify(p),
+        p.createdAt,
+        'legacy_worker',
+        now + 45000,
+        now,
+      ),
+    ]);
+    const before = await legacy.DB.prepare('SELECT * FROM jobs WHERE id=?')
+      .bind('legacy_job')
+      .first<Record<string, unknown>>();
+    await migrate('0002_job_telemetry.sql');
+    const after = await legacy.DB.prepare('SELECT * FROM jobs WHERE id=?')
+      .bind('legacy_job')
+      .first<Record<string, unknown>>();
+    expect(after).toMatchObject(before!);
+    for (const [key, value] of Object.entries(after!))
+      if (!(key in before!)) expect(value).toBeNull();
+    expect(await getProject(legacy, owner, p.id)).toEqual(p);
+    expect(await helperStatus(legacy, owner)).toMatchObject({
+      online: true,
+      workerId: 'legacy_worker',
+      helperVersion: null,
+    });
+    expect(await listJobs(legacy, owner, p.id)).toEqual([
+      {
+        id: 'legacy_job',
+        projectId: p.id,
+        kind: 'plan.assist',
+        baseRevision: 1,
+        status: 'running',
+        instruction: 'Legacy request',
+        createdAt: p.createdAt,
+        startedAt: new Date(now).toISOString(),
+      },
+    ]);
   });
   it('keeps projects scoped and lets exactly one concurrent revision win', async () => {
     const p = await project();
@@ -558,5 +671,221 @@ describe('Worker with real D1 and R2 bindings', () => {
     );
     expect(applied.project.screens[0].description).toBe(refined.description);
     expect(applied.project.screens.slice(1)).toEqual(p.screens.slice(1));
+  });
+  it('keeps legacy protocol-1 helpers working and exposes server lifecycle timestamps without inventing telemetry', async () => {
+    const before = Date.now();
+    const { lease, read } = await claimedJob('legacy_telemetry');
+    const started = await read();
+    expect(Date.parse(started.startedAt!)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(started.startedAt!)).toBeLessThanOrEqual(Date.now());
+    expect(started.helperVersion).toBeUndefined();
+    expect(started.usage).toBeUndefined();
+    expect(started.progressStage).toBeUndefined();
+    expect(started.lastHeartbeatAt).toBeUndefined();
+    expect(started.completedAt).toBeUndefined();
+    const helper = await payload<HelperStatus>(await request('/api/helper/status'));
+    expect(helper).toMatchObject({ online: true, workerId: lease.workerId, helperVersion: null });
+    await payload(await bridge({ ...lease, action: 'heartbeat' }));
+    const active = await read();
+    expect(Date.parse(active.lastHeartbeatAt!)).toBeGreaterThanOrEqual(
+      Date.parse(started.startedAt!),
+    );
+    await payload(await bridge({ ...lease, action: 'complete', result }));
+    const completed = await read();
+    expect(completed.status).toBe('completed');
+    expect(Date.parse(completed.completedAt!)).toBeGreaterThanOrEqual(
+      Date.parse(active.lastHeartbeatAt!),
+    );
+    expect(completed.usage).toBeUndefined();
+    expect(completed.progressStage).toBeUndefined();
+  });
+  it('persists bounded progress, usage and helper version while resisting delayed telemetry and completion retries', async () => {
+    const { lease, read } = await claimedJob('telemetry_current', '1.0.2');
+    expect(await read()).toMatchObject({ helperVersion: '1.0.2' });
+    expect(await payload<HelperStatus>(await request('/api/helper/status'))).toMatchObject({
+      helperVersion: '1.0.2',
+    });
+    await payload(
+      await bridge({ ...lease, action: 'heartbeat', telemetry: { stage: 'launching' } }),
+    );
+    const launching = await read();
+    expect(launching.progressStage).toBe('launching');
+    expect(launching.progressUpdatedAt).toBe(launching.lastHeartbeatAt);
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'heartbeat',
+        telemetry: { stage: 'model-started', usage: { inputTokens: 100, cachedInputTokens: 0 } },
+      }),
+    );
+    const modelStarted = await read();
+    expect(modelStarted).toMatchObject({
+      progressStage: 'model-started',
+      usage: { inputTokens: 100, cachedInputTokens: 0 },
+    });
+    expect(modelStarted.usage?.outputTokens).toBeUndefined();
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'heartbeat',
+        telemetry: { stage: 'launching', usage: { inputTokens: 10 } },
+      }),
+    );
+    await payload(
+      await bridge({ ...lease, action: 'heartbeat', telemetry: { stage: 'model-started' } }),
+    );
+    const delayed = await read();
+    expect(delayed.progressStage).toBe('model-started');
+    expect(delayed.progressUpdatedAt).toBe(modelStarted.progressUpdatedAt);
+    expect(delayed.usage).toEqual(modelStarted.usage);
+    const usage = {
+      inputTokens: 100,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 25,
+      outputTokens: 64,
+      reasoningOutputTokens: 12,
+    };
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'complete',
+        result,
+        telemetry: { stage: 'validating', usage },
+      }),
+    );
+    const completed = await read();
+    expect(completed).toMatchObject({ status: 'completed', progressStage: 'validating', usage });
+    const heartbeat = await payload<{ cancelled: boolean }>(
+      await bridge({
+        ...lease,
+        action: 'heartbeat',
+        telemetry: { stage: 'response-received', usage: { inputTokens: 999 } },
+      }),
+    );
+    expect(heartbeat.cancelled).toBe(true);
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'complete',
+        result,
+        telemetry: { usage: { inputTokens: 999 } },
+      }),
+    );
+    expect(await read()).toEqual(completed);
+    const proposals = await payload<{ proposals: unknown[] }>(
+      await request(`/api/projects/${completed.projectId}/proposals`),
+    );
+    expect(proposals.proposals).toHaveLength(1);
+  });
+  it('scopes telemetry to the active owner, helper and lease and rejects raw or client-timestamp metadata', async () => {
+    const { lease, read } = await claimedJob('telemetry_scope', '1.0.2');
+    const before = await read();
+    const telemetry = { stage: 'validating' as const, usage: { inputTokens: 999 } };
+    for (const wrong of [{ workerId: 'wrong_worker' }, { leaseToken: 'wrong_lease' }]) {
+      expect(
+        await payload(await bridge({ ...lease, ...wrong, action: 'heartbeat', telemetry })),
+      ).toMatchObject({ cancelled: true });
+      expect(
+        (await bridge({ ...lease, ...wrong, action: 'complete', result, telemetry })).status,
+      ).toBe(409);
+    }
+    expect(
+      await bridgeOperation(env, 'another-owner@example.com', {
+        ...lease,
+        action: 'heartbeat',
+        telemetry,
+      }),
+    ).toMatchObject({ cancelled: true });
+    await expect(
+      bridgeOperation(env, 'another-owner@example.com', {
+        ...lease,
+        action: 'complete',
+        result,
+        telemetry,
+      }),
+    ).rejects.toThrow(/lease expired/);
+    for (const invalid of [
+      {},
+      { stage: 'thinking' },
+      { stage: 'launching', raw: 'private output' },
+      { usage: {} },
+      { usage: { inputTokens: -1 } },
+      { usage: { outputTokens: 1.5 } },
+      { usage: { inputTokens: Number.MAX_SAFE_INTEGER + 1 } },
+      { usage: { prompt: 'private prompt' } },
+      { stage: 'launching', progressUpdatedAt: '2000-01-01T00:00:00.000Z' },
+    ]) {
+      expect((await bridge({ ...lease, action: 'heartbeat', telemetry: invalid })).status).toBe(
+        400,
+      );
+      expect(
+        (await bridge({ ...lease, action: 'complete', result, telemetry: invalid })).status,
+      ).toBe(400);
+    }
+    expect(
+      (await bridge({ ...lease, action: 'heartbeat', lastHeartbeatAt: '2000-01-01T00:00:00.000Z' }))
+        .status,
+    ).toBe(400);
+    expect(await read()).toEqual(before);
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'complete',
+        error: 'The helper could not finish this task.',
+        telemetry: { stage: 'model-started', usage: { inputTokens: Number.MAX_SAFE_INTEGER } },
+      }),
+    );
+    const failed = await read();
+    expect(failed).toMatchObject({
+      status: 'failed',
+      progressStage: 'model-started',
+      usage: { inputTokens: Number.MAX_SAFE_INTEGER },
+    });
+    expect(failed.completedAt).toBeDefined();
+    await payload(
+      await bridge({
+        ...lease,
+        action: 'complete',
+        error: 'Retry',
+        telemetry: { stage: 'validating' },
+      }),
+    );
+    expect(await read()).toEqual(failed);
+  });
+  it('stamps cancellation and expiry once, preserving prior progress against late heartbeat or completion', async () => {
+    for (const terminal of ['cancel', 'lease-expiry', 'runtime-expiry'] as const) {
+      const { p, lease, read } = await claimedJob(
+        `telemetry_${terminal.replaceAll('-', '_')}`,
+        '1.0.2',
+      );
+      await payload(
+        await bridge({
+          ...lease,
+          action: 'heartbeat',
+          telemetry: { stage: 'model-started', usage: { inputTokens: 12 } },
+        }),
+      );
+      const active = await read();
+      if (terminal === 'cancel')
+        await payload(await request(`/api/projects/${p.id}/jobs/${lease.jobId}`, 'DELETE'));
+      else if (terminal === 'lease-expiry')
+        await env.DB.prepare('UPDATE jobs SET lease_expires_at=? WHERE id=?')
+          .bind(Date.now() - 1, lease.jobId)
+          .run();
+      else
+        await env.DB.prepare('UPDATE jobs SET started_at=? WHERE id=?')
+          .bind(Date.now() - 600001, lease.jobId)
+          .run();
+      const completed = await read();
+      expect(completed.status).toBe(terminal === 'cancel' ? 'cancelled' : 'failed');
+      expect(completed.completedAt).toBeDefined();
+      expect(completed.progressUpdatedAt).toBe(active.progressUpdatedAt);
+      const late = { ...lease, telemetry: { stage: 'validating', usage: { inputTokens: 999 } } };
+      expect(await payload(await bridge({ ...late, action: 'heartbeat' }))).toMatchObject({
+        cancelled: true,
+      });
+      expect((await bridge({ ...late, action: 'complete', result })).status).toBe(409);
+      expect(await read()).toEqual(completed);
+    }
   });
 });

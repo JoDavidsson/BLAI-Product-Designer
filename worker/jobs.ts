@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   PROTOCOL_VERSION,
+  JOB_PROGRESS_STAGES,
   uid,
   type AIJob,
   type AIProposal,
@@ -8,9 +9,18 @@ import {
   type JobKind,
   type Project,
   type AIResult,
+  type AIUsage,
+  type JobTelemetry,
   walkNodes,
 } from '../shared/model';
-import { idSchema, jobKindSchema, resultSchema, projectSchema } from '../shared/validation';
+import {
+  idSchema,
+  jobKindSchema,
+  resultSchema,
+  projectSchema,
+  helperVersionSchema,
+  telemetrySchema,
+} from '../shared/validation';
 import { AppError, type Env } from './types';
 import { assertProjectSize, getProject, proposalToProject, saveProject } from './projects';
 
@@ -33,7 +43,26 @@ type JobRow = {
   lease_token: string | null;
   lease_expires_at: number | null;
   started_at: number | null;
-};
+  last_heartbeat_at: number | null;
+  completed_at: number | null;
+  progress_stage: AIJob['progressStage'] | null;
+  progress_updated_at: number | null;
+  helper_version: string | null;
+} & Record<UsageColumn, number | null>;
+const USAGE_COLUMNS = {
+  inputTokens: 'input_tokens',
+  cachedInputTokens: 'cached_input_tokens',
+  cacheWriteInputTokens: 'cache_write_input_tokens',
+  outputTokens: 'output_tokens',
+  reasoningOutputTokens: 'reasoning_output_tokens',
+} as const;
+type UsageColumn = (typeof USAGE_COLUMNS)[keyof AIUsage];
+function jobUsage(row: JobRow): AIUsage | undefined {
+  const entries = Object.entries(USAGE_COLUMNS)
+    .filter(([, column]) => row[column] != null)
+    .map(([key, column]) => [key, row[column]]);
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
 const toJob = (r: JobRow): AIJob => ({
   id: r.id,
   projectId: r.project_id,
@@ -43,20 +72,31 @@ const toJob = (r: JobRow): AIJob => ({
   instruction: r.instruction,
   ...(r.screen_id ? { screenId: r.screen_id } : {}),
   createdAt: r.created_at,
+  ...(r.started_at != null ? { startedAt: new Date(r.started_at).toISOString() } : {}),
+  ...(r.last_heartbeat_at != null
+    ? { lastHeartbeatAt: new Date(r.last_heartbeat_at).toISOString() }
+    : {}),
+  ...(r.completed_at != null ? { completedAt: new Date(r.completed_at).toISOString() } : {}),
+  ...(r.progress_stage ? { progressStage: r.progress_stage } : {}),
+  ...(r.progress_updated_at != null
+    ? { progressUpdatedAt: new Date(r.progress_updated_at).toISOString() }
+    : {}),
+  ...(jobUsage(r) ? { usage: jobUsage(r) } : {}),
+  ...(r.helper_version ? { helperVersion: r.helper_version } : {}),
   ...(r.error ? { error: r.error } : {}),
   ...(r.proposal_id ? { proposalId: r.proposal_id } : {}),
 });
 export async function expireJobs(env: Env, owner: string): Promise<void> {
   const now = Date.now();
   await env.DB.prepare(
-    "UPDATE jobs SET status='failed',error='The helper stopped responding or exceeded the ten-minute job limit. Start a new job when it is connected.',lease_token=NULL WHERE owner=? AND ((status='running' AND (lease_expires_at<? OR started_at<?)) OR (status='queued' AND created_at<?))",
+    "UPDATE jobs SET status='failed',error='The helper stopped responding or exceeded the ten-minute job limit. Start a new job when it is connected.',lease_token=NULL,completed_at=? WHERE owner=? AND ((status='running' AND (lease_expires_at<? OR started_at<?)) OR (status='queued' AND created_at<?))",
   )
-    .bind(owner, now, now - MAX_RUNTIME_MS, new Date(now - MAX_RUNTIME_MS).toISOString())
+    .bind(now, owner, now, now - MAX_RUNTIME_MS, new Date(now - MAX_RUNTIME_MS).toISOString())
     .run();
 }
 export async function helperStatus(env: Env, owner: string): Promise<HelperStatus> {
   const row = await env.DB.prepare(
-    'SELECT worker_id,protocol_version,capabilities,last_seen FROM helpers WHERE owner=? ORDER BY last_seen DESC LIMIT 1',
+    'SELECT worker_id,protocol_version,capabilities,last_seen,helper_version FROM helpers WHERE owner=? ORDER BY last_seen DESC LIMIT 1',
   )
     .bind(owner)
     .first<{
@@ -64,12 +104,14 @@ export async function helperStatus(env: Env, owner: string): Promise<HelperStatu
       protocol_version: number;
       capabilities: string;
       last_seen: number;
+      helper_version: string | null;
     }>();
   return {
     online:
       !!row && row.protocol_version === PROTOCOL_VERSION && row.last_seen > Date.now() - ONLINE_MS,
     lastSeen: row ? new Date(row.last_seen).toISOString() : null,
     workerId: row?.worker_id ?? null,
+    helperVersion: row?.helper_version ?? null,
     protocolVersion: row?.protocol_version ?? PROTOCOL_VERSION,
     capabilities: row ? JSON.parse(row.capabilities) : [],
     imageGeneration: false,
@@ -162,9 +204,9 @@ export async function cancelJob(
     .first();
   if (!existing) throw new AppError(404, 'job_not_found', 'This AI task could not be found.');
   await env.DB.prepare(
-    "UPDATE jobs SET status='cancelled',lease_token=NULL WHERE id=? AND owner=? AND project_id=? AND status IN ('queued','running')",
+    "UPDATE jobs SET status='cancelled',lease_token=NULL,completed_at=? WHERE id=? AND owner=? AND project_id=? AND status IN ('queued','running')",
   )
-    .bind(jobId, owner, projectId)
+    .bind(Date.now(), jobId, owner, projectId)
     .run();
 }
 type ProposalRow = {
@@ -272,10 +314,17 @@ export const bridgeSchema = z.discriminatedUnion('action', [
       ...base,
       action: z.literal('claim'),
       capabilities: z.array(jobKindSchema).min(1).max(5),
+      helperVersion: helperVersionSchema.optional(),
     })
     .strict(),
   z
-    .object({ ...base, action: z.literal('heartbeat'), jobId: idSchema, leaseToken: idSchema })
+    .object({
+      ...base,
+      action: z.literal('heartbeat'),
+      jobId: idSchema,
+      leaseToken: idSchema,
+      telemetry: telemetrySchema.optional(),
+    })
     .strict(),
   z
     .object({
@@ -285,11 +334,35 @@ export const bridgeSchema = z.discriminatedUnion('action', [
       leaseToken: idSchema,
       result: resultSchema.optional(),
       error: z.string().min(1).max(2000).optional(),
+      telemetry: telemetrySchema.optional(),
     })
     .strict()
     .refine((v) => !!v.result !== !!v.error, 'Send either a result or an error.'),
 ]);
 type BridgeInput = z.infer<typeof bridgeSchema>;
+/** Merge within the lease-guarded UPDATE, so delayed heartbeats cannot undo progress. */
+function telemetryUpdate(telemetry: JobTelemetry | undefined, now: number) {
+  const assignments: string[] = [];
+  const values: (string | number | null)[] = [];
+  if (telemetry?.stage) {
+    const previousRank = `CASE progress_stage ${JOB_PROGRESS_STAGES.map(
+      (stage, rank) => `WHEN '${stage}' THEN ${rank}`,
+    ).join(' ')} ELSE -1 END`;
+    const nextRank = JOB_PROGRESS_STAGES.indexOf(telemetry.stage);
+    assignments.push(
+      `progress_stage=CASE WHEN ? > (${previousRank}) THEN ? ELSE progress_stage END`,
+      `progress_updated_at=CASE WHEN ? > (${previousRank}) THEN ? ELSE progress_updated_at END`,
+    );
+    values.push(nextRank, telemetry.stage, nextRank, now);
+  }
+  for (const [key, column] of Object.entries(USAGE_COLUMNS)) {
+    const count = telemetry?.usage?.[key as keyof AIUsage];
+    if (count === undefined) continue;
+    assignments.push(`${column}=MAX(COALESCE(${column},0),?)`);
+    values.push(count);
+  }
+  return { sql: assignments.length ? `,${assignments.join(',')}` : '', values };
+}
 export function validateResultForJob(
   result: AIResult,
   job: { kind: JobKind; screen_id: string | null; context: string },
@@ -354,7 +427,7 @@ export async function bridgeOperation(
   await expireJobs(env, owner);
   if (input.action === 'claim') {
     await env.DB.prepare(
-      'INSERT INTO helpers(owner,worker_id,protocol_version,capabilities,last_seen) VALUES(?,?,?,?,?) ON CONFLICT(owner,worker_id) DO UPDATE SET protocol_version=excluded.protocol_version,capabilities=excluded.capabilities,last_seen=excluded.last_seen',
+      'INSERT INTO helpers(owner,worker_id,protocol_version,capabilities,last_seen,helper_version) VALUES(?,?,?,?,?,?) ON CONFLICT(owner,worker_id) DO UPDATE SET protocol_version=excluded.protocol_version,capabilities=excluded.capabilities,last_seen=excluded.last_seen,helper_version=excluded.helper_version',
     )
       .bind(
         owner,
@@ -362,18 +435,20 @@ export async function bridgeOperation(
         input.protocolVersion,
         JSON.stringify([...new Set(input.capabilities)]),
         now,
+        input.helperVersion ?? null,
       )
       .run();
     const lease = uid('lease');
     const placeholders = input.capabilities.map(() => '?').join(',');
     const row = await env.DB.prepare(
-      `UPDATE jobs SET status='running',worker_id=?,lease_token=?,lease_expires_at=?,started_at=? WHERE id=(SELECT id FROM jobs WHERE owner=? AND status='queued' AND kind IN (${placeholders}) AND NOT EXISTS(SELECT 1 FROM jobs WHERE owner=? AND worker_id=? AND status='running') ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
+      `UPDATE jobs SET status='running',worker_id=?,lease_token=?,lease_expires_at=?,started_at=?,helper_version=? WHERE id=(SELECT id FROM jobs WHERE owner=? AND status='queued' AND kind IN (${placeholders}) AND NOT EXISTS(SELECT 1 FROM jobs WHERE owner=? AND worker_id=? AND status='running') ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
     )
       .bind(
         input.workerId,
         lease,
         now + LEASE_MS,
         now,
+        input.helperVersion ?? null,
         owner,
         ...input.capabilities,
         owner,
@@ -401,11 +476,14 @@ export async function bridgeOperation(
     .bind(now, owner, input.workerId)
     .run();
   if (input.action === 'heartbeat') {
+    const telemetry = telemetryUpdate(input.telemetry, now);
     const row = await env.DB.prepare(
-      "UPDATE jobs SET lease_expires_at=? WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id",
+      `UPDATE jobs SET lease_expires_at=?,last_heartbeat_at=MAX(COALESCE(last_heartbeat_at,0),?)${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
     )
       .bind(
         now + LEASE_MS,
+        now,
+        ...telemetry.values,
         input.jobId,
         owner,
         input.workerId,
@@ -435,21 +513,44 @@ export async function bridgeOperation(
   )
     throw new AppError(409, 'lease_expired', 'This job was cancelled or its helper lease expired.');
   if (input.error) {
-    await env.DB.prepare(
-      "UPDATE jobs SET status='failed',error=? WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=?",
+    const telemetry = telemetryUpdate(input.telemetry, now);
+    const failed = await env.DB.prepare(
+      `UPDATE jobs SET status='failed',error=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
     )
-      .bind(input.error, job.id, owner, input.workerId, input.leaseToken, now)
-      .run();
+      .bind(
+        input.error,
+        now,
+        ...telemetry.values,
+        job.id,
+        owner,
+        input.workerId,
+        input.leaseToken,
+        now,
+        now - MAX_RUNTIME_MS,
+      )
+      .first();
+    if (!failed) throw new AppError(409, 'lease_expired', 'This job is no longer active.');
     return { ok: true };
   }
   const result = input.result!;
   validateResultForJob(result, job);
   const proposalId = uid('proposal'),
-    createdAt = new Date().toISOString();
+    createdAt = new Date(now).toISOString(),
+    telemetry = telemetryUpdate(input.telemetry, now);
   const results = await env.DB.batch([
     env.DB.prepare(
-      "UPDATE jobs SET status='completed',proposal_id=? WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? RETURNING id",
-    ).bind(proposalId, job.id, owner, input.workerId, input.leaseToken, now),
+      `UPDATE jobs SET status='completed',proposal_id=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
+    ).bind(
+      proposalId,
+      now,
+      ...telemetry.values,
+      job.id,
+      owner,
+      input.workerId,
+      input.leaseToken,
+      now,
+      now - MAX_RUNTIME_MS,
+    ),
     env.DB.prepare(
       "INSERT INTO proposals(id,job_id,project_id,owner,kind,base_revision,created_at,status,result) SELECT ?,id,project_id,owner,kind,base_revision,?,'pending',? FROM jobs WHERE id=? AND owner=? AND changes()=1",
     ).bind(proposalId, createdAt, JSON.stringify(result), job.id, owner),

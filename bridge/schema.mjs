@@ -1,5 +1,65 @@
 /** Self-contained structured output contract for the subscription-only helper. */
 export const PROTOCOL_VERSION = 1;
+export const DESIGNER_HELPER_VERSION = '1.0.2';
+export const PROGRESS_STAGES = Object.freeze([
+  'launching',
+  'model-started',
+  'response-received',
+  'validating',
+]);
+export const USAGE_FIELDS = Object.freeze([
+  'inputTokens',
+  'cachedInputTokens',
+  'cacheWriteInputTokens',
+  'outputTokens',
+  'reasoningOutputTokens',
+]);
+
+/** Telemetry is a small closed vocabulary, never model text or diagnostics. */
+export function validateTelemetry(value) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length === 0 ||
+    Object.keys(value).some((key) => !['stage', 'usage'].includes(key)) ||
+    (Object.hasOwn(value, 'stage') && !PROGRESS_STAGES.includes(value.stage))
+  )
+    throw new Error('protocol');
+  const result = {};
+  if (value.stage !== undefined) result.stage = value.stage;
+  if (Object.hasOwn(value, 'usage')) {
+    if (
+      !value.usage ||
+      typeof value.usage !== 'object' ||
+      Array.isArray(value.usage) ||
+      Object.keys(value.usage).length === 0 ||
+      Object.entries(value.usage).some(
+        ([key, count]) => !USAGE_FIELDS.includes(key) || !Number.isSafeInteger(count) || count < 0,
+      )
+    )
+      throw new Error('protocol');
+    result.usage = { ...value.usage };
+  }
+  return result;
+}
+
+/** Copy only counts actually reported by Codex's turn.completed event. */
+export function usageFromCodex(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const usage = {};
+  for (const [source, target] of [
+    ['input_tokens', 'inputTokens'],
+    ['cached_input_tokens', 'cachedInputTokens'],
+    ['cache_write_input_tokens', 'cacheWriteInputTokens'],
+    ['output_tokens', 'outputTokens'],
+    ['reasoning_output_tokens', 'reasoningOutputTokens'],
+  ]) {
+    const count = value[source];
+    if (Number.isSafeInteger(count) && count >= 0) usage[target] = count;
+  }
+  return Object.keys(usage).length ? usage : undefined;
+}
 export const CAPABILITIES = Object.freeze([
   'plan.assist',
   'plan.review',

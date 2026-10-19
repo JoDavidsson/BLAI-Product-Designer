@@ -1778,6 +1778,164 @@
   min-width: 0;
   border-left: 0;
 }
-.wf-node .annotation-label {
-  max-width: 150px;
+/* Comment text occupies its own canvas margin, outside the scaled artboard. */
+.wf-frame-and-comments {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 48px;
+}
+.wf-frame-and-comments .wf-frame-sizer {
+  flex-shrink: 0;
+}
+.wf-comment-pins {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+.wireframe-workspace .wf-comment-pin {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #725bb1;
+  border-radius: 50%;
+  background: #fff;
+  color: #63499e;
+  font: 600 11px/1 sans-serif;
+  box-shadow: 0 1px 5px #30204425;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) scale(calc(1 / var(--wf-zoom, 1)));
+  cursor: pointer;
+}
+.wf-comment-pin:hover,
+.wf-comment-pin.is-selected {
+  background: #7860b4;
+  color: #fff;
+}
+.wf-comment-pin:focus-visible,
+.wf-comment-card button:focus-visible {
+  outline: 2px solid #765bb3;
+  outline-offset: 3px;
+}
+.wf-comment-connectors {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+.wf-comment-connectors path {
+  fill: none;
+  stroke: #ac98c9;
+  stroke-width: 1.5px;
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+}
+.wf-comment-connectors path.is-selected {
+  stroke: #6e50a2;
+  stroke-width: 2px;
+}
+.wf-comment-margin {
+  position: relative;
+  width: 280px;
+  flex: 0 0 280px;
+  z-index: 3;
+}
+.wf-comment-margin-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #6c607b;
+  font-size: 12px;
+  font-weight: 600;
+  height: 26px;
+}
+.wf-comment-margin-heading > span {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 400;
+}
+.wf-comment-card {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #dfd5ea;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 3px 10px #3a24570a;
+  overflow: hidden;
+  cursor: pointer;
+}
+.wf-comment-card.is-selected {
+  border-color: #9176b9;
+  box-shadow: 0 0 0 1px #9176b933;
+}
+.wf-comment-card .wf-comment-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 13px 0;
+  border: 0;
+  background: transparent;
+  color: #594e66;
+  font-size: 12px;
+  text-align: left;
+}
+.wf-comment-number {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #eee7f7;
+  color: #7757a5;
+  flex-shrink: 0;
+  font-weight: 600;
+  font-size: 11px;
+}
+.wf-comment-accepted {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #537563;
+  margin-left: auto;
+  font-size: 10px;
+}
+.wf-comment-card > p {
+  color: #4b4355;
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 10px 13px 12px;
+  max-height: 240px;
+  overflow: auto;
+}
+.wf-comment-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid #eee8f3;
+  padding: 6px 8px;
+  gap: 6px;
+}
+.wf-comment-card-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px;
+  background: transparent;
+  color: #78638e;
+  font-size: 11px;
+}
+.wf-comment-card-actions button:hover {
+  background: #f2ecf8;
 }

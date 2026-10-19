@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { bridgeHeaders, validateConfig } from './config.mjs';
-import { CAPABILITIES, PROTOCOL_VERSION, validateJob } from './schema.mjs';
+import {
+  CAPABILITIES,
+  PROTOCOL_VERSION,
+  PROGRESS_STAGES,
+  validateJob,
+  validateTelemetry,
+} from './schema.mjs';
 import { runCodex } from './codex-runner.mjs';
 
 export class ConnectionError extends Error {
@@ -9,8 +15,19 @@ export class ConnectionError extends Error {
     this.status = status;
   }
 }
-export function createClient(config, { fetcher = fetch, workerId = randomUUID() } = {}) {
+export function createClient(
+  config,
+  { fetcher = fetch, workerId = randomUUID(), helperVersion } = {},
+) {
   validateConfig(config);
+  if (
+    helperVersion !== undefined &&
+    (typeof helperVersion !== 'string' ||
+      helperVersion.length > 64 ||
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(helperVersion))
+  )
+    throw new Error('protocol');
+  let extensions = true;
   async function request(action, fields = {}, signal) {
     signal?.throwIfAborted();
     const response = await fetcher(new URL('/api/codex', config.site), {
@@ -48,10 +65,32 @@ export function createClient(config, { fetcher = fetch, workerId = randomUUID() 
       throw new Error('protocol');
     }
   }
+  async function compatibleRequest(action, fields, signal) {
+    const legacy = { ...fields };
+    delete legacy.helperVersion;
+    delete legacy.telemetry;
+    const optional = Object.hasOwn(fields, 'helperVersion') || Object.hasOwn(fields, 'telemetry');
+    try {
+      return await request(action, extensions ? fields : legacy, signal);
+    } catch (error) {
+      // Older protocol-1 Workers reject unknown optional fields before mutation.
+      // Retry once without them, and keep this connection in legacy mode.
+      if (!extensions || !optional || error.status !== 400) throw error;
+      extensions = false;
+      return request(action, legacy, signal);
+    }
+  }
   return {
     workerId,
     async claim({ signal } = {}) {
-      const state = await request('claim', { capabilities: [...CAPABILITIES] }, signal);
+      const state = await compatibleRequest(
+        'claim',
+        {
+          capabilities: [...CAPABILITIES],
+          ...(helperVersion ? { helperVersion } : {}),
+        },
+        signal,
+      );
       if (
         !state ||
         state.protocolVersion !== PROTOCOL_VERSION ||
@@ -61,10 +100,14 @@ export function createClient(config, { fetcher = fetch, workerId = randomUUID() 
         throw new Error('protocol');
       return state.job === null ? null : validateJob(state.job);
     },
-    async heartbeat(job, { signal } = {}) {
-      const state = await request(
+    async heartbeat(job, { signal, telemetry } = {}) {
+      const state = await compatibleRequest(
         'heartbeat',
-        { jobId: job.id, leaseToken: job.leaseToken },
+        {
+          jobId: job.id,
+          leaseToken: job.leaseToken,
+          ...(telemetry !== undefined ? { telemetry: validateTelemetry(telemetry) } : {}),
+        },
         signal,
       );
       if (
@@ -76,12 +119,17 @@ export function createClient(config, { fetcher = fetch, workerId = randomUUID() 
         throw new Error('protocol');
       return state;
     },
-    async complete(job, outcome, { signal } = {}) {
+    async complete(job, outcome, { signal, telemetry } = {}) {
       if ((outcome.result !== undefined) === (outcome.error !== undefined))
         throw new Error('protocol');
-      const state = await request(
+      const state = await compatibleRequest(
         'complete',
-        { jobId: job.id, leaseToken: job.leaseToken, ...outcome },
+        {
+          jobId: job.id,
+          leaseToken: job.leaseToken,
+          ...outcome,
+          ...(telemetry !== undefined ? { telemetry: validateTelemetry(telemetry) } : {}),
+        },
         signal,
       );
       if (state?.ok !== true || Object.keys(state).length !== 1) throw new Error('protocol');
@@ -97,14 +145,23 @@ export async function processJob(
   const control = new AbortController();
   let missed = 0;
   let activeHeartbeat = null;
+  let finishing = false;
+  let telemetry;
+  let telemetryRevision = 0;
+  let sentRevision = 0;
   const abort = () => control.abort();
   signal?.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
-  const heartbeat = setInterval(() => {
+  const heartbeatOptions = () => ({
+    signal: control.signal,
+    ...(telemetry ? { telemetry: structuredClone(telemetry) } : {}),
+  });
+  function renew() {
     if (activeHeartbeat || control.signal.aborted) return;
+    sentRevision = telemetryRevision;
     activeHeartbeat = (async () => {
       try {
-        const state = await client.heartbeat(job, { signal: control.signal });
+        const state = await client.heartbeat(job, heartbeatOptions());
         missed = 0;
         if (state.cancelled) abort();
       } catch (error) {
@@ -112,13 +169,33 @@ export async function processJob(
       }
     })().finally(() => {
       activeHeartbeat = null;
+      if (!finishing && !control.signal.aborted && telemetryRevision > sentRevision) renew();
     });
-  }, heartbeatMs);
+  }
+  function onTelemetry(value) {
+    if (finishing || control.signal.aborted) return;
+    const next = validateTelemetry(value);
+    const merged = { ...telemetry };
+    if (next.stage && PROGRESS_STAGES.indexOf(next.stage) > PROGRESS_STAGES.indexOf(merged.stage))
+      merged.stage = next.stage;
+    if (next.usage) {
+      merged.usage = { ...merged.usage };
+      for (const [key, count] of Object.entries(next.usage))
+        merged.usage[key] = Math.max(merged.usage[key] ?? 0, count);
+    }
+    if (JSON.stringify(merged) === JSON.stringify(telemetry)) return;
+    telemetry = merged;
+    telemetryRevision += 1;
+    renew();
+  }
+  const heartbeat = setInterval(renew, heartbeatMs);
   try {
     let outcome;
     try {
       if (control.signal.aborted) return 'cancelled';
-      outcome = { result: await run(job, { workDir, command, signal: control.signal }) };
+      outcome = {
+        result: await run(job, { workDir, command, signal: control.signal, onTelemetry }),
+      };
     } catch (error) {
       if (!control.signal.aborted)
         outcome = {
@@ -127,6 +204,7 @@ export async function processJob(
             : 'unavailable',
         };
     }
+    finishing = true;
     clearInterval(heartbeat);
     // A pending renewal can still report cancellation. Drain it before issuing
     // the final ownership check, and keep shutdown connected through completion.
@@ -134,7 +212,7 @@ export async function processJob(
     if (!outcome || control.signal.aborted) return 'cancelled';
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const state = await client.heartbeat(job, { signal: control.signal });
+        const state = await client.heartbeat(job, heartbeatOptions());
         if (state.cancelled || control.signal.aborted) return 'cancelled';
         break;
       } catch (error) {
@@ -147,7 +225,7 @@ export async function processJob(
     for (let attempt = 0; attempt < 3; attempt++) {
       if (control.signal.aborted) return 'cancelled';
       try {
-        await client.complete(job, outcome, { signal: control.signal });
+        await client.complete(job, outcome, heartbeatOptions());
         return outcome.error ?? 'completed';
       } catch (error) {
         if (control.signal.aborted) return 'cancelled';
@@ -156,6 +234,7 @@ export async function processJob(
       }
     }
   } finally {
+    finishing = true;
     clearInterval(heartbeat);
     signal?.removeEventListener('abort', abort);
   }

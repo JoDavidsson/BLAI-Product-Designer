@@ -164,6 +164,14 @@ try {
   await page.getByRole('button', { name: 'Close dialog' }).click();
 
   await page.getByRole('button', { name: 'New project', exact: true }).click();
+  // Let the dialog's scheduled initial focus finish before testing its trap.
+  await until(
+    () =>
+      page
+        .getByLabel('Project name', { exact: true })
+        .evaluate((input) => document.activeElement === input),
+    'new project dialog initial focus',
+  );
   await page.getByRole('button', { name: 'Close dialog' }).focus();
   await page.keyboard.press('Shift+Tab');
   assert.equal(

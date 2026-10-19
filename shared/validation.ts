@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   JOB_KINDS,
+  JOB_PROGRESS_STAGES,
   MAX_DIAGRAMS,
   MAX_DIAGRAM_SOURCE_LENGTH,
   NODE_TYPES,
@@ -236,6 +237,31 @@ export const resultSchema: z.ZodType<AIResult> = z
   });
 export const jobKindSchema = z.enum(JOB_KINDS);
 export const revisionSchema = z.number().int().positive();
+export const helperVersionSchema = z
+  .string()
+  .max(64)
+  .regex(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/);
+const tokenCount = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+export const usageSchema = z
+  .object({
+    inputTokens: tokenCount.optional(),
+    cachedInputTokens: tokenCount.optional(),
+    cacheWriteInputTokens: tokenCount.optional(),
+    outputTokens: tokenCount.optional(),
+    reasoningOutputTokens: tokenCount.optional(),
+  })
+  .strict()
+  .refine(
+    (usage) => Object.values(usage).some((value) => value !== undefined),
+    'Send a token count.',
+  );
+export const telemetrySchema = z
+  .object({ stage: z.enum(JOB_PROGRESS_STAGES).optional(), usage: usageSchema.optional() })
+  .strict()
+  .refine(
+    (telemetry) => telemetry.stage !== undefined || telemetry.usage !== undefined,
+    'Send a progress stage or token usage.',
+  );
 
 /** Limit nesting before recursive schema traversal, including malicious raw JSON. */
 export function boundedJsonDepth(value: unknown, depth = 0): boolean {

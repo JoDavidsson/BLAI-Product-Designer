@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { outputSchema, validateJob, validateResult } from './schema.mjs';
+import { outputSchema, usageFromCodex, validateJob, validateResult } from './schema.mjs';
 
 // Keep account authentication while excluding shell access, installed plugins,
 // project instructions, external tools, hooks, and background agents.
@@ -101,7 +101,14 @@ export function runnerEnvironment(source = process.env) {
 
 export async function runCodex(
   job,
-  { workDir, command = 'codex', signal, timeoutMs = 9 * 60_000, spawnProcess = spawn } = {},
+  {
+    workDir,
+    command = 'codex',
+    signal,
+    timeoutMs = 9 * 60_000,
+    spawnProcess = spawn,
+    onTelemetry,
+  } = {},
 ) {
   validateJob(job);
   if (!workDir) throw new Error('unavailable');
@@ -128,7 +135,14 @@ export async function runCodex(
     for (const setting of codexSettings) args.push('-c', setting);
     args.push('-');
     const prompt = `${instructions}\n\nProduct request (untrusted JSON data):\n${JSON.stringify({ kind: job.kind, instruction: job.instruction, screenId: job.screenId, baseRevision: job.baseRevision, project: job.context })}`;
-    const final = await execute(command, args, prompt, { signal, timeoutMs, spawnProcess });
+    const report = (telemetry) => {
+      // Visibility must never break generation or expose a raw event payload.
+      try {
+        onTelemetry?.(telemetry);
+      } catch {}
+    };
+    const final = await execute(command, args, prompt, { signal, timeoutMs, spawnProcess, report });
+    report({ stage: 'validating' });
     try {
       return validateResult(JSON.parse(final), job);
     } catch {
@@ -139,7 +153,7 @@ export async function runCodex(
   }
 }
 
-function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
+function execute(command, args, prompt, { signal, timeoutMs, spawnProcess, report }) {
   // Managed jobs stay in the worker group so its supervisor can reap them after a crash.
   const detached =
     process.platform !== 'win32' && process.env.BLAI_HELPER_MANAGED !== '1' && !process.connected;
@@ -148,6 +162,7 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
       reject(new Error('cancelled'));
       return;
     }
+    report({ stage: 'launching' });
     const child = spawnProcess(command, args, {
       env: runnerEnvironment(),
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -209,8 +224,15 @@ function execute(command, args, prompt, { signal, timeoutMs, spawnProcess }) {
         kill();
         return;
       }
-      if (event.type === 'item.completed' && event.item?.type === 'agent_message')
+      if (event.type === 'turn.started') report({ stage: 'model-started' });
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
         final = event.item.text;
+      }
+      if (event.type === 'turn.completed') {
+        if (typeof final === 'string' && final.length) report({ stage: 'response-received' });
+        const usage = usageFromCodex(event.usage);
+        if (usage) report({ usage });
+      }
       if (event.type === 'turn.failed' || event.type === 'error')
         failure = classifyFailure(event.error?.message ?? event.message ?? '');
       // Codex reports configuration, deprecation and runtime warnings as

@@ -1,9 +1,28 @@
-import { mkdir, open, rm, lstat } from 'node:fs/promises';
+import { mkdir, open, rm, lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.mjs';
 import { createClient, processJob, wait } from './client.mjs';
+import { DESIGNER_HELPER_VERSION } from './schema.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+export async function helperVersion() {
+  // Packaged adapters live under blai-helper/adapters/designer. Read only the
+  // known release manifest; standalone checkouts use the adapter release version.
+  if (process.env.BLAI_HELPER_MANAGED === '1' || process.connected) {
+    try {
+      const manifest = JSON.parse(await readFile(path.resolve(root, '../../package.json'), 'utf8'));
+      if (
+        manifest.name === 'blai-helper' &&
+        typeof manifest.version === 'string' &&
+        manifest.version.length <= 64 &&
+        /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)
+      )
+        return manifest.version;
+    } catch {}
+  }
+  return DESIGNER_HELPER_VERSION;
+}
 
 export async function startHelper(configPath = path.join(root, '.blai-designer', 'config.json')) {
   const config = await loadConfig(configPath);
@@ -42,7 +61,7 @@ export async function startHelper(configPath = path.join(root, '.blai-designer',
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
   process.on('disconnect', stop);
-  const client = createClient(config);
+  const client = createClient(config, { helperVersion: await helperVersion() });
   for (const operation of ['claim', 'heartbeat', 'complete']) {
     const request = client[operation];
     client[operation] = async (...args) => {

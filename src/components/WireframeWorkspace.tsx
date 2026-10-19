@@ -76,7 +76,11 @@ import {
   type WireNode,
 } from '../../shared/model';
 import AnnotationPanel from './AnnotationPanel';
-import AnnotationOverlay from './AnnotationOverlay';
+import WireframeCommentMargin, {
+  COMMENT_MARGIN_GAP,
+  COMMENT_MARGIN_WIDTH,
+  WireframeCommentPins,
+} from './WireframeComments';
 import {
   CONTAINERS,
   cloneWireNode,
@@ -315,8 +319,9 @@ function EditableNode({ node, ...props }: RenderProps & { node: WireNode }) {
         </div>
       )}
       {comments.length > 0 && (
-        <AnnotationOverlay
+        <WireframeCommentPins
           comments={comments}
+          allComments={props.comments ?? []}
           selectedId={props.selectedCommentId}
           onSelect={(comment) => props.onCommentSelect?.(comment)}
         />
@@ -431,6 +436,8 @@ export default function WireframeWorkspace({
   const [clipboard, setClipboard] = useState<WireNode>();
   const [screenName, setScreenName] = useState('');
   const viewport = useRef<HTMLDivElement>(null);
+  const commentFrame = useRef<HTMLDivElement>(null);
+  const artboard = useRef<HTMLDivElement>(null);
   const aiDialog = useRef<HTMLElement>(null);
   const aiReturnFocus = useRef<HTMLElement | null>(null);
   const handledFocusRequest = useRef<number | undefined>(undefined);
@@ -448,6 +455,9 @@ export default function WireframeWorkspace({
     (comment) => comment.target.screenId === screen?.id,
   );
   const openCommentCount = screenComments.filter((comment) => comment.status === 'open').length;
+  const visibleComments = screenComments.filter((comment) => comment.status !== 'resolved');
+  const commentSpace =
+    !preview && visibleComments.length > 0 ? COMMENT_MARGIN_GAP + COMMENT_MARGIN_WIDTH : 0;
 
   useEffect(() => {
     if (screen && screen.id !== screenId) setScreenId(screen.id);
@@ -504,11 +514,11 @@ export default function WireframeWorkspace({
     const element = viewport.current;
     if (!element) return;
     const observer = new ResizeObserver(() =>
-      setZoom(Math.min(1, Math.max(0.25, (element.clientWidth - 96) / frameWidth))),
+      setZoom(Math.min(1, Math.max(0.25, (element.clientWidth - 96 - commentSpace) / frameWidth))),
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [frameWidth, preview]);
+  }, [frameWidth, preview, commentSpace]);
   useEffect(() => {
     if (!aiOpen) return;
     aiDialog.current?.querySelector('textarea')?.focus();
@@ -799,12 +809,13 @@ export default function WireframeWorkspace({
   }
   function selectComment(comment: Annotation) {
     setSelectedComment(comment);
+    setSelectedId(comment.target.nodeId);
     setCommentTarget(undefined);
     setInspector('comments');
   }
   function fitCanvas() {
     const width = viewport.current?.clientWidth ?? 1000;
-    setZoom(Math.min(1, Math.max(0.25, (width - 100) / frameWidth)));
+    setZoom(Math.min(1, Math.max(0.25, (width - 100 - commentSpace) / frameWidth)));
   }
   function navigate(id: string) {
     if (project.screens.some((item) => item.id === id)) selectScreen(id);
@@ -1068,7 +1079,7 @@ export default function WireframeWorkspace({
             {screen ? (
               <div
                 className="wf-canvas-stage"
-                style={{ width: Math.max(frameWidth * zoom + 96, 400) }}
+                style={{ width: Math.max(frameWidth * zoom + 96 + commentSpace, 400) }}
               >
                 <div className="wf-frame-caption" style={{ width: frameWidth * zoom }}>
                   <span>
@@ -1081,94 +1092,117 @@ export default function WireframeWorkspace({
                   </span>
                   <span>{frameWidth} px</span>
                 </div>
-                <div className="wf-frame-sizer" style={{ width: frameWidth * zoom }}>
-                  <div
-                    className={`wf-artboard${screen.platform === 'mobile' ? ' wf-mobile-artboard' : ''}${commentMode ? ' is-commenting' : ''}`}
-                    style={
-                      {
-                        width: frameWidth,
-                        zoom,
-                        background: project.design.surface,
-                        color: project.design.text,
-                        fontFamily: project.design.font === 'serif' ? 'Georgia, serif' : undefined,
-                        '--wf-accent': project.design.accent,
-                        '--wf-radius': `${project.design.radius}px`,
-                      } as CSSProperties
-                    }
-                    onClick={(event) =>
-                      commentMode ? commentAt(undefined, event) : setSelectedId(undefined)
-                    }
-                  >
-                    {screen.platform === 'mobile' && (
-                      <div className="wf-phone-status">
-                        <span>9:41</span>
-                        <span className="wf-phone-island" />
-                        <span>● ▰</span>
-                      </div>
-                    )}
-                    {preview ? (
-                      <WireframeRenderer
-                        nodes={screen.nodes}
-                        design={project.design}
-                        preview
-                        onNavigate={navigate}
-                        onUnlinked={() =>
-                          onToast(
-                            'This button has no destination yet. Connect it in the editor’s Interaction settings.',
-                          )
-                        }
-                      />
-                    ) : (
-                      <DndContext
-                        sensors={sensors}
-                        collisionDetection={canvasCollision}
-                        onDragEnd={dragEnd}
-                      >
+                <div className="wf-frame-and-comments" ref={commentFrame}>
+                  <div className="wf-frame-sizer" style={{ width: frameWidth * zoom }}>
+                    <div
+                      ref={artboard}
+                      className={`wf-artboard${screen.platform === 'mobile' ? ' wf-mobile-artboard' : ''}${commentMode ? ' is-commenting' : ''}`}
+                      style={
+                        {
+                          width: frameWidth,
+                          zoom,
+                          background: project.design.surface,
+                          color: project.design.text,
+                          fontFamily:
+                            project.design.font === 'serif' ? 'Georgia, serif' : undefined,
+                          '--wf-accent': project.design.accent,
+                          '--wf-zoom': zoom,
+                          '--wf-radius': `${project.design.radius}px`,
+                        } as CSSProperties
+                      }
+                      onClick={(event) =>
+                        commentMode ? commentAt(undefined, event) : setSelectedId(undefined)
+                      }
+                    >
+                      {screen.platform === 'mobile' && (
+                        <div className="wf-phone-status">
+                          <span>9:41</span>
+                          <span className="wf-phone-island" />
+                          <span>● ▰</span>
+                        </div>
+                      )}
+                      {preview ? (
                         <WireframeRenderer
                           nodes={screen.nodes}
                           design={project.design}
-                          selectedId={selectedId}
-                          onSelect={(node, event) => {
-                            if (commentMode) commentAt(node, event);
-                            else {
-                              setSelectedId(node.id);
-                              setInspector('properties');
-                            }
-                          }}
-                          comments={screenComments}
-                          selectedCommentId={selectedComment?.id}
-                          onCommentSelect={selectComment}
-                          commentMode={commentMode}
+                          preview
+                          onNavigate={navigate}
+                          onUnlinked={() =>
+                            onToast(
+                              'This button has no destination yet. Connect it in the editor’s Interaction settings.',
+                            )
+                          }
                         />
-                      </DndContext>
-                    )}
-                    {screen.nodes.length === 0 && (
-                      <div className="wf-empty-artboard">
-                        <LayoutPanelTop size={32} strokeWidth={1} />
-                        <h3>A blank canvas. A good beginning.</h3>
-                        <p>Add components from the left to give this screen a shape.</p>
-                        <button
-                          className="wf-button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setLibrary(true);
-                          }}
+                      ) : (
+                        <DndContext
+                          sensors={sensors}
+                          collisionDetection={canvasCollision}
+                          onDragEnd={dragEnd}
                         >
-                          <Plus size={14} /> Browse components
-                        </button>
-                      </div>
-                    )}
-                    {!preview && (
-                      <AnnotationOverlay
-                        comments={screenComments.filter(
-                          (comment) =>
-                            comment.target.kind === 'screen' && comment.status !== 'resolved',
-                        )}
-                        selectedId={selectedComment?.id}
-                        onSelect={selectComment}
-                      />
-                    )}
+                          <WireframeRenderer
+                            nodes={screen.nodes}
+                            design={project.design}
+                            selectedId={selectedId}
+                            onSelect={(node, event) => {
+                              if (commentMode) commentAt(node, event);
+                              else {
+                                setSelectedId(node.id);
+                                setInspector('properties');
+                              }
+                            }}
+                            comments={visibleComments}
+                            selectedCommentId={selectedComment?.id}
+                            onCommentSelect={selectComment}
+                            commentMode={commentMode}
+                          />
+                        </DndContext>
+                      )}
+                      {screen.nodes.length === 0 && (
+                        <div className="wf-empty-artboard">
+                          <LayoutPanelTop size={32} strokeWidth={1} />
+                          <h3>A blank canvas. A good beginning.</h3>
+                          <p>Add components from the left to give this screen a shape.</p>
+                          <button
+                            className="wf-button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setLibrary(true);
+                            }}
+                          >
+                            <Plus size={14} /> Browse components
+                          </button>
+                        </div>
+                      )}
+                      {!preview && (
+                        <WireframeCommentPins
+                          comments={visibleComments.filter(
+                            (comment) => comment.target.kind === 'screen',
+                          )}
+                          allComments={visibleComments}
+                          selectedId={selectedComment?.id}
+                          onSelect={selectComment}
+                        />
+                      )}
+                    </div>
                   </div>
+                  {!preview && visibleComments.length > 0 && (
+                    <WireframeCommentMargin
+                      comments={visibleComments}
+                      selectedId={selectedComment?.id}
+                      onSelect={selectComment}
+                      onResolve={(comment) =>
+                        onChange({
+                          ...project,
+                          comments: project.comments.map((item) =>
+                            item.id === comment.id ? { ...item, status: 'resolved' } : item,
+                          ),
+                        })
+                      }
+                      frameRef={commentFrame}
+                      artboardRef={artboard}
+                      zoom={zoom}
+                    />
+                  )}
                 </div>
                 <div className="wf-artboard-footnote">
                   <span className="wf-footnote-dot" />
