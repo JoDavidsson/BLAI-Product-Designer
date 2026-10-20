@@ -1893,13 +1893,46 @@ function Connections({
         </div>
         <div className="setup-steps">
           <div>
+            <span>
+              <ArrowDownToLine size={16} />
+            </span>
+            <section>
+              <h3>Update your installed helper</h3>
+              <p>
+                If your helper includes the built-in updater, run this on the computer running it:
+              </p>
+              <pre>
+                <code>{`"$HOME/.local/bin/blai-helper" update`}</code>
+              </pre>
+              <p>
+                The helper uses your saved connections to download the latest available release,
+                update its permanent folder, and reconnect your tools. Settings and ChatGPT sign-in
+                are preserved. Temporary files are cleaned up automatically; a failed installation
+                restores the previous version.
+              </p>
+              <details>
+                <summary>Check for updates or use a downloaded release</summary>
+                <pre>
+                  <code>{`"$HOME/.local/bin/blai-helper" update --check
+"$HOME/.local/bin/blai-helper" update --file "$HOME/Downloads/blai-helper.tar.gz"`}</code>
+                </pre>
+                <p>
+                  Use the actual archive filename with <code>--file</code>. Older helpers need a
+                  one-time installation of a release with the built-in updater before this command
+                  is available. The legacy 1.1.0 download below does not include it; see the full
+                  setup instructions for that upgrade.
+                </p>
+              </details>
+            </section>
+          </div>
+          <div>
             <span>1</span>
             <section>
               <h3>Download the manager and Designer settings</h3>
               <p>
-                Save downloads to Downloads on your Linux computer. To update an existing manager,
-                download BLAI Helper only. Designer settings are needed when adding Designer for the
-                first time and contain private connection credentials.
+                For a first installation, save downloads to Downloads on your Linux computer.
+                Designer settings are also needed when adding Designer to an existing helper and
+                contain private connection credentials.
               </p>
               <p>
                 Version 1.1.0 supports freeform canvas designs with GPT-6 Astra at Medium reasoning
@@ -1934,31 +1967,7 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
-                <summary>Update BLAI Helper to 1.1.0</summary>
-                <p>
-                  Download BLAI Helper 1.1.0 above, then run these commands in order on the Linux
-                  computer running your helper. Stop if a command reports an error. Your existing
-                  profiles and ChatGPT sign-in are reused; no settings download is needed.
-                </p>
-                <pre>
-                  <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
-cd "$blai_helper_dir/blai-helper"
-npm ci --omit=dev
-node bin/blai-helper.mjs doctor
-node bin/blai-helper.mjs install
-"$HOME/.local/bin/blai-helper" --version
-"$HOME/.local/bin/blai-helper" status`}</code>
-                </pre>
-                <p>
-                  The version command should print <code>BLAI Helper 1.1.0</code>. Installation
-                  restarts the service for all configured tools. Keep the new extracted directory
-                  and its dependencies in place; the service runs from there. Keep the old directory
-                  until the new helper connects.
-                </p>
-              </details>
-              <details>
-                <summary>First time installing BLAI Helper</summary>
+                <summary>First installation with the legacy 1.1.0 download</summary>
                 <p>
                   Open a terminal on this Linux computer and run these commands in order. Stop if a
                   command reports an error.
@@ -1972,6 +1981,12 @@ node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downl
 node bin/blai-helper.mjs doctor
 node bin/blai-helper.mjs install --migrate`}</code>
                 </pre>
+                <p>
+                  This older release runs from its extracted directory, so keep that directory and
+                  its dependencies until you install a release with the built-in updater. The newer
+                  installer moves the helper into <code>~/.local/share/blai-helper/app</code> for
+                  future updates.
+                </p>
               </details>
               <details>
                 <summary>Add Designer to an installed manager</summary>
@@ -1987,8 +2002,7 @@ node bin/blai-helper.mjs install --migrate`}</code>
               </details>
               <p>
                 To combine an older Writer helper too, import its settings before migration using
-                the full instructions below. Keep the extracted helper directory in place after
-                installation. Each tool keeps its own private connection settings.
+                the full instructions below. Each tool keeps its own private connection settings.
               </p>
               <a
                 className="text-button"
