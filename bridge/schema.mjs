@@ -1,6 +1,6 @@
 /** Self-contained structured output contract for the subscription-only helper. */
 export const PROTOCOL_VERSION = 1;
-export const DESIGNER_HELPER_VERSION = '1.1.0';
+export const DESIGNER_HELPER_VERSION = '1.1.1';
 export const CANVAS_CAPABILITY = 'canvas.v1';
 export const PROGRESS_STAGES = Object.freeze([
   'launching',

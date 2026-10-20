@@ -5,8 +5,8 @@ Validated in the managed Linux development environment with Node 24.19.0 and sys
 ## Passed
 
 - `npm ci`: clean dependency installation.
-- `npm test`: 122 tests across eleven files, including real local Worker/D1/R2 integration.
-- `npm run test:helper`: 40 tests for protocol, schemas, cancellation, timeouts, credentials handling, and Linux setup.
+- `npm test`: 126 tests across eleven files, including real local Worker/D1/R2 integration.
+- `npm run test:helper`: 60 tests for protocol, schemas, cancellation, timeouts, credentials handling, and Linux setup.
 - `npm run build`: TypeScript and both client and Worker production bundles.
 - `npm run format:check`: source formatting.
 - `npm audit`: zero reported vulnerabilities in the installed dependency tree (2026-10-17).
@@ -34,10 +34,20 @@ Regression checks cover text drafts before navigation, a delayed autosave respon
 
 The shared BLAI manager's 95 tests pass with release version 1.1.0, including packaging and both actual adapters with fixture runners. Designer retains GPT-6 Astra, Medium reasoning, 872000 configured context, and forced ChatGPT authentication. The Writer checkout and its settings are unchanged. The production build and helper archive are prepared locally.
 
+## Wireframe timeout correction — 2026-10-20
+
+The runner and Worker now share a packaged runtime policy: 19/20 minutes for full wireframe generation, 9/10 minutes for the other jobs. Real D1 regressions backdate jobs to verify generation renewal and successful/error completion at 19 minutes, expiry after 20 minutes, the other job limits, lost leases, queue expiry, cancellation, ownership, and rejection of late results. The 45-second lease is unchanged.
+
+A fixture reproduced the old runner discarding a completed response when CLI shutdown hung. Both managed and standalone real subprocess checks now preserve validated completed results while escalating cleanup to SIGKILL when required. Tests reject incomplete or late responses, cancellation during cleanup, fatal events, malformed output, tool attempts, and unexpected exit codes. No live subscription job was used to establish these results; the specific cause and duration of the user's failed run remain unconfirmed.
+
+All 126 application tests, 60 helper tests, and the AI activity browser workflow pass for this correction. The browser check covers distinct timeout/connection/queue messages, retained helper version and last reported stage, unchanged project data, cancellation, and narrow layout. The other six browser workflows were last run for the freeform release above. The TypeScript/production build, Helper 1.1.1 packaging, and formatting pass. The shared manager's 95 tests also pass.
+
+Deploy the updated Designer app and install Helper 1.1.1 before testing a live wireframe request. Updating only one side leaves the older side's time limit in effect.
+
 ## External operations not validated
 
-- This freeform release has not been deployed to Cloudflare. Deployment waits for review of the local QA result.
-- No live model request through BLAI Helper 1.1.0. Geometry output, negotiated fallback, completion, proposal application, and authentication settings are covered by helper fixtures and real local D1 integration. The new helper must be installed on the user's Linux computer before a live subscription request validates this release.
+- The timeout correction has not been deployed to Cloudflare from this workspace.
+- No live model request through BLAI Helper 1.1.1. Geometry output, negotiated fallback, completion, proposal application, and authentication settings are covered by helper fixtures and real local D1 integration. The new helper must be installed on the user's Linux computer before a live subscription request validates this release.
 - No real GitHub specification export from the application. Its atomic API behavior is tested with fixtures; a server-side token and chosen destination are required.
 - No successful image-generation artifact integration. Official Codex source confirms native subscription support, but a bounded CLI probe could not initialize its read-only app-server runtime here. The image capability remains disabled. No API-key fallback is used.
 - Real remote image imports were not exercised against an external image host. URL/DNS/redirect validation and image handling have fixture coverage, and actual uploaded image handling was tested through local R2.

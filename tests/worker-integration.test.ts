@@ -11,6 +11,7 @@ import {
   type AIJob,
   type AIResult,
   type HelperStatus,
+  type JobKind,
   type Project,
 } from '../shared/model';
 import {
@@ -61,8 +62,15 @@ async function project() {
 async function bridge(data: unknown) {
   return request('/api/codex', 'POST', data, { 'x-designer-bridge-key': 'integration-only-key' });
 }
-async function claimedJob(workerId: string, helperVersion?: string) {
-  const p = await project();
+async function claimedJob(workerId: string, helperVersion?: string, kind: JobKind = 'plan.assist') {
+  const p =
+    kind === 'wireframe.refine'
+      ? (
+          await payload<{ project: Project }>(
+            await request('/api/projects', 'POST', { sample: true }),
+          )
+        ).project
+      : await project();
   const claimInput = {
     action: 'claim',
     protocolVersion: 1,
@@ -73,8 +81,9 @@ async function claimedJob(workerId: string, helperVersion?: string) {
   await payload(await bridge(claimInput));
   await payload(
     await request(`/api/projects/${p.id}/jobs`, 'POST', {
-      kind: 'plan.assist',
+      kind,
       instruction: 'Clarify this plan',
+      ...(kind === 'wireframe.refine' ? { screenId: p.screens[0].id } : {}),
     }),
   );
   const claim = await payload<{ protocolVersion: number; job: { id: string; leaseToken: string } }>(
@@ -90,6 +99,7 @@ async function claimedJob(workerId: string, helperVersion?: string) {
     'leaseExpiresAt',
     'leaseToken',
     'projectId',
+    ...(kind === 'wireframe.refine' ? ['screenId'] : []),
   ]);
   const lease = {
     protocolVersion: 1 as const,
@@ -627,6 +637,150 @@ describe('Worker with real D1 and R2 bindings', () => {
       await request(`/api/projects/${p.id}/proposals`),
     );
     expect(proposals.proposals).toHaveLength(0);
+  });
+  it('renews and completes wireframe generation after ten minutes while retaining lease ownership', async () => {
+    const generated: AIResult = {
+      ...result,
+      plan: null,
+      requirements: [],
+      screens: [
+        {
+          id: 'slow_generated_screen',
+          name: 'First screen',
+          platform: 'desktop',
+          description: 'A bounded generation fixture.',
+          state: 'default',
+          nodes: [createNode('heading')],
+        },
+      ],
+    };
+    for (const outcome of [{ result: generated }, { error: 'timeout' }]) {
+      const { p, lease, read } = await claimedJob(
+        `extended_generation_${'result' in outcome ? 'success' : 'failure'}`,
+        undefined,
+        'wireframe.generate',
+      );
+      await env.DB.prepare('UPDATE jobs SET started_at=? WHERE id=?')
+        .bind(Date.now() - 19 * 60_000, lease.jobId)
+        .run();
+      expect((await read()).status).toBe('running');
+      const renewed = await payload<{ cancelled: boolean; leaseExpiresAt: string }>(
+        await bridge({ ...lease, action: 'heartbeat', telemetry: { stage: 'model-started' } }),
+      );
+      expect(renewed.cancelled).toBe(false);
+      expect(Date.parse(renewed.leaseExpiresAt)).toBeGreaterThan(Date.now() + 40_000);
+      // A still-connected helper owns the result, even during the longer budget.
+      expect(
+        (await bridge({ ...lease, workerId: 'not_the_owner', action: 'complete', ...outcome }))
+          .status,
+      ).toBe(409);
+      await payload(await bridge({ ...lease, action: 'complete', ...outcome }));
+      const completed = await read();
+      expect(completed.status).toBe('result' in outcome ? 'completed' : 'failed');
+      expect(completed.completedAt).toBeDefined();
+      expect(completed.progressStage).toBe('model-started');
+      const proposals = await payload<{ proposals: unknown[] }>(
+        await request(`/api/projects/${p.id}/proposals`),
+      );
+      expect(proposals.proposals).toHaveLength('result' in outcome ? 1 : 0);
+      await payload(await bridge({ ...lease, action: 'complete', ...outcome }));
+      expect(await read()).toEqual(completed);
+    }
+  });
+  it('keeps the ten-minute runtime cap for every other job kind', async () => {
+    for (const kind of JOB_KINDS.filter((kind) => kind !== 'wireframe.generate')) {
+      const { p, lease, read } = await claimedJob(
+        `ordinary_runtime_${kind.replace('.', '_')}`,
+        undefined,
+        kind,
+      );
+      await env.DB.prepare('UPDATE jobs SET started_at=? WHERE id=?')
+        .bind(Date.now() - 10 * 60_000 - 1, lease.jobId)
+        .run();
+      const expired = await read();
+      expect(expired).toMatchObject({ status: 'failed', error: 'runtime_timeout' });
+      expect(expired.completedAt).toBeDefined();
+      expect(await payload(await bridge({ ...lease, action: 'heartbeat' }))).toMatchObject({
+        cancelled: true,
+      });
+      expect((await bridge({ ...lease, action: 'complete', result })).status).toBe(409);
+      expect(await read()).toEqual(expired);
+      expect(await payload(await request(`/api/projects/${p.id}/proposals`))).toEqual({
+        proposals: [],
+      });
+    }
+  });
+  it('distinguishes the generation runtime cap from lost leases and preserves cancellation', async () => {
+    for (const terminal of ['runtime', 'lease', 'cancel'] as const) {
+      const { p, lease, read } = await claimedJob(
+        `generation_stop_${terminal}`,
+        undefined,
+        'wireframe.generate',
+      );
+      await payload(
+        await bridge({
+          ...lease,
+          action: 'heartbeat',
+          telemetry: { stage: 'model-started', usage: { inputTokens: 25 } },
+        }),
+      );
+      await env.DB.prepare('UPDATE jobs SET started_at=? WHERE id=?')
+        .bind(Date.now() - (terminal === 'runtime' ? 20 * 60_000 + 1 : 11 * 60_000), lease.jobId)
+        .run();
+      if (terminal === 'lease')
+        await env.DB.prepare('UPDATE jobs SET lease_expires_at=? WHERE id=?')
+          .bind(Date.now() - 1, lease.jobId)
+          .run();
+      if (terminal === 'cancel')
+        await payload(await request(`/api/projects/${p.id}/jobs/${lease.jobId}`, 'DELETE'));
+      const stopped = await read();
+      expect(stopped.status).toBe(terminal === 'cancel' ? 'cancelled' : 'failed');
+      if (terminal !== 'cancel')
+        expect(stopped.error).toBe(
+          terminal === 'runtime' ? 'runtime_timeout' : 'helper_disconnected',
+        );
+      expect(stopped).toMatchObject({ progressStage: 'model-started', usage: { inputTokens: 25 } });
+      expect(stopped.completedAt).toBeDefined();
+      const late = { ...lease, telemetry: { stage: 'validating', usage: { inputTokens: 999 } } };
+      expect(await payload(await bridge({ ...late, action: 'heartbeat' }))).toMatchObject({
+        cancelled: true,
+      });
+      expect((await bridge({ ...late, action: 'complete', result })).status).toBe(409);
+      expect(await read()).toEqual(stopped);
+      expect(await payload(await request(`/api/projects/${p.id}/proposals`))).toEqual({
+        proposals: [],
+      });
+    }
+  });
+  it('reports queue expiry separately without claiming or publishing the request', async () => {
+    const p = await project();
+    const claimInput = {
+      action: 'claim',
+      protocolVersion: 1,
+      workerId: 'queue_timeout_helper',
+      capabilities: JOB_KINDS,
+    };
+    await payload(await bridge(claimInput));
+    const { job } = await payload<{ job: AIJob }>(
+      await request(`/api/projects/${p.id}/jobs`, 'POST', {
+        kind: 'wireframe.generate',
+        instruction: 'Create the first wireframe.',
+      }),
+    );
+    await env.DB.prepare('UPDATE jobs SET created_at=? WHERE id=?')
+      .bind(new Date(Date.now() - 10 * 60_000 - 1).toISOString(), job.id)
+      .run();
+    const read = async () =>
+      (await payload<{ jobs: AIJob[] }>(await request(`/api/projects/${p.id}/jobs`))).jobs[0];
+    const expired = await read();
+    expect(expired).toMatchObject({ status: 'failed', error: 'queue_timeout' });
+    expect(expired.startedAt).toBeUndefined();
+    expect(expired.completedAt).toBeDefined();
+    expect((await payload<{ job: unknown }>(await bridge(claimInput))).job).toBeNull();
+    expect(await read()).toEqual(expired);
+    expect(await payload(await request(`/api/projects/${p.id}/proposals`))).toEqual({
+      proposals: [],
+    });
   });
   it('requires the requested screen for refinements and rejects unresolved generated navigation', async () => {
     const p = (

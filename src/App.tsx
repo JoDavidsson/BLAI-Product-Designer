@@ -82,7 +82,14 @@ const helperFailureMessages: Record<string, string> = {
   limit:
     'Your Codex account has reached a usage limit. Check your allowance and try again when it resets.',
   invalid: 'Codex returned a result Designer could not use. Try a smaller, more focused request.',
-  timeout: 'Codex took too long to finish. Try a smaller request.',
+  timeout:
+    'Codex reached the request’s time limit before finishing. Your project is unchanged. Try a more focused request.',
+  runtime_timeout:
+    'This request reached the server’s time limit. Your project is unchanged. Try a more focused request.',
+  helper_disconnected:
+    'The helper stopped checking in. Check its connection and try again. Your project is unchanged.',
+  queue_timeout:
+    'This request waited too long for an available helper. Try again when the current request finishes and the helper is connected.',
   unavailable:
     'Codex could not finish this request. Check BLAI Helper on your Linux computer, then try again.',
 };
@@ -1902,17 +1909,18 @@ function Connections({
                 first time and contain private connection credentials.
               </p>
               <p>
-                Version 1.1.0 supports freeform canvas designs with GPT-6 Astra at Medium reasoning
-                through your ChatGPT Codex subscription, with an 872,000-token model context—the
-                current published maximum in Codex. Project input limits still apply. Install this
-                update on the Linux computer running your helper to use these settings.
+                Version 1.1.1 gives detailed wireframe drafts more time to finish and fixes
+                completed responses being reported as timeouts. It uses GPT-6 Astra at Medium
+                reasoning through your ChatGPT Codex subscription, with an 872,000-token model
+                context—the current published maximum in Codex. Project input limits still apply.
+                Install this update on the Linux computer running your helper to use these settings.
               </p>
               <a
                 className="btn outlined"
                 href="/blai-helper.tar.gz"
-                download="blai-helper-1.1.0.tar.gz"
+                download="blai-helper-1.1.1.tar.gz"
               >
-                <ArrowDownToLine size={15} /> Download BLAI Helper 1.1.0
+                <ArrowDownToLine size={15} /> Download BLAI Helper 1.1.1
               </a>{' '}
               <button
                 className="btn outlined"
@@ -1934,15 +1942,15 @@ function Connections({
                 Ctrl+C before installing.
               </p>
               <details>
-                <summary>Update BLAI Helper to 1.1.0</summary>
+                <summary>Update BLAI Helper to 1.1.1</summary>
                 <p>
-                  Download BLAI Helper 1.1.0 above, then run these commands in order on the Linux
+                  Download BLAI Helper 1.1.1 above, then run these commands in order on the Linux
                   computer running your helper. Stop if a command reports an error. Your existing
                   profiles and ChatGPT sign-in are reused; no settings download is needed.
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -1951,7 +1959,7 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status`}</code>
                 </pre>
                 <p>
-                  The version command should print <code>BLAI Helper 1.1.0</code>. Installation
+                  The version command should print <code>BLAI Helper 1.1.1</code>. Installation
                   restarts the service for all configured tools. Keep the new extracted directory
                   and its dependencies in place; the service runs from there. Keep the old directory
                   until the new helper connects.
@@ -1965,7 +1973,7 @@ node bin/blai-helper.mjs install
                 </p>
                 <pre>
                   <code>{`blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"

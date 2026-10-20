@@ -213,7 +213,33 @@ try {
   );
   await expect(details()).not.toContainText('Update to Helper');
 
-  setJob({ id: 'job_cancel', status: 'queued', error: undefined, completedAt: undefined });
+  const savedBeforeFailures = structuredClone(project);
+  for (const [error, message] of [
+    ['timeout', 'Codex reached the request’s time limit before finishing.'],
+    ['runtime_timeout', 'This request reached the server’s time limit.'],
+    ['helper_disconnected', 'The helper stopped checking in.'],
+    ['queue_timeout', 'This request waited too long for an available helper.'],
+  ]) {
+    setJob({
+      id: `job_${error}`,
+      error,
+      helperVersion: '1.1.1',
+      progressStage: 'response-received',
+    });
+    await expect(details()).toContainText(message);
+    await expect(details()).toContainText('Last reported stage: Response received');
+    await expect(details()).toContainText('Helper v1.1.1');
+    await expect(details()).not.toContainText('Ready to review');
+  }
+  assert.deepEqual(project, savedBeforeFailures);
+
+  setJob({
+    id: 'job_cancel',
+    status: 'queued',
+    error: undefined,
+    completedAt: undefined,
+    progressStage: undefined,
+  });
   await expect(details()).toContainText('Waiting for helper');
   await details().getByRole('button', { name: 'Cancel request', exact: true }).click();
   await expect(details()).toContainText('Request cancelled');
@@ -233,8 +259,8 @@ try {
 
   await page.getByRole('button', { name: 'Workspace settings', exact: true }).click();
   await expect(
-    page.getByRole('link', { name: 'Download BLAI Helper 1.1.0', exact: true }),
-  ).toHaveAttribute('download', 'blai-helper-1.1.0.tar.gz');
+    page.getByRole('link', { name: 'Download BLAI Helper 1.1.1', exact: true }),
+  ).toHaveAttribute('download', 'blai-helper-1.1.1.tar.gz');
   await page.setViewportSize({ width: 390, height: 844 });
   await activity.getByRole('button', { name: 'Show AI request activity', exact: true }).click();
   const bounds = await details().boundingBox();

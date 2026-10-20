@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import jobLimits from '../bridge/job-limits.json';
 import {
   PROTOCOL_VERSION,
   JOB_PROGRESS_STAGES,
@@ -26,7 +27,10 @@ import { assertProjectSize, getProject, proposalToProject, saveProject } from '.
 
 const LEASE_MS = 45000;
 const ONLINE_MS = 35000;
-const MAX_RUNTIME_MS = 600000;
+// Only trusted, checked-in policy values are interpolated; request data is bound.
+const RUNTIME_MS_SQL = `CASE kind ${Object.entries(jobLimits.runtimeMs)
+  .map(([kind, milliseconds]) => `WHEN '${kind}' THEN ${milliseconds}`)
+  .join(' ')} ELSE 0 END`;
 export const CANVAS_CAPABILITY = 'canvas.v1';
 function needsCanvas(project: Project, kind: JobKind, screenId?: string | null): boolean {
   return project.screens.some(
@@ -97,9 +101,9 @@ const toJob = (r: JobRow): AIJob => ({
 export async function expireJobs(env: Env, owner: string): Promise<void> {
   const now = Date.now();
   await env.DB.prepare(
-    "UPDATE jobs SET status='failed',error='The helper stopped responding or exceeded the ten-minute job limit. Start a new job when it is connected.',lease_token=NULL,completed_at=? WHERE owner=? AND ((status='running' AND (lease_expires_at<? OR started_at<?)) OR (status='queued' AND created_at<?))",
+    `UPDATE jobs SET status='failed',error=CASE WHEN status='queued' THEN 'queue_timeout' WHEN started_at<?-(${RUNTIME_MS_SQL}) THEN 'runtime_timeout' ELSE 'helper_disconnected' END,lease_token=NULL,completed_at=? WHERE owner=? AND ((status='running' AND (lease_expires_at<? OR started_at<?-(${RUNTIME_MS_SQL}))) OR (status='queued' AND created_at<?))`,
   )
-    .bind(now, owner, now, now - MAX_RUNTIME_MS, new Date(now - MAX_RUNTIME_MS).toISOString())
+    .bind(now, now, owner, now, now, new Date(now - jobLimits.queueMs).toISOString())
     .run();
 }
 export async function helperStatus(env: Env, owner: string): Promise<HelperStatus> {
@@ -518,7 +522,7 @@ export async function bridgeOperation(
   if (input.action === 'heartbeat') {
     const telemetry = telemetryUpdate(input.telemetry, now);
     const row = await env.DB.prepare(
-      `UPDATE jobs SET lease_expires_at=?,last_heartbeat_at=MAX(COALESCE(last_heartbeat_at,0),?)${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
+      `UPDATE jobs SET lease_expires_at=?,last_heartbeat_at=MAX(COALESCE(last_heartbeat_at,0),?)${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=?-(${RUNTIME_MS_SQL}) RETURNING id`,
     )
       .bind(
         now + LEASE_MS,
@@ -529,7 +533,7 @@ export async function bridgeOperation(
         input.workerId,
         input.leaseToken,
         now,
-        now - MAX_RUNTIME_MS,
+        now,
       )
       .first();
     return {
@@ -549,13 +553,13 @@ export async function bridgeOperation(
     !job ||
     job.status !== 'running' ||
     (job.lease_expires_at ?? 0) < now ||
-    (job.started_at ?? 0) < now - MAX_RUNTIME_MS
+    (job.started_at ?? 0) < now - jobLimits.runtimeMs[job.kind]
   )
     throw new AppError(409, 'lease_expired', 'This job was cancelled or its helper lease expired.');
   if (input.error) {
     const telemetry = telemetryUpdate(input.telemetry, now);
     const failed = await env.DB.prepare(
-      `UPDATE jobs SET status='failed',error=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
+      `UPDATE jobs SET status='failed',error=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=?-(${RUNTIME_MS_SQL}) RETURNING id`,
     )
       .bind(
         input.error,
@@ -566,7 +570,7 @@ export async function bridgeOperation(
         input.workerId,
         input.leaseToken,
         now,
-        now - MAX_RUNTIME_MS,
+        now,
       )
       .first();
     if (!failed) throw new AppError(409, 'lease_expired', 'This job is no longer active.');
@@ -579,7 +583,7 @@ export async function bridgeOperation(
     telemetry = telemetryUpdate(input.telemetry, now);
   const results = await env.DB.batch([
     env.DB.prepare(
-      `UPDATE jobs SET status='completed',proposal_id=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=? RETURNING id`,
+      `UPDATE jobs SET status='completed',proposal_id=?,completed_at=?${telemetry.sql} WHERE id=? AND owner=? AND worker_id=? AND lease_token=? AND status='running' AND lease_expires_at>=? AND started_at>=?-(${RUNTIME_MS_SQL}) RETURNING id`,
     ).bind(
       proposalId,
       now,
@@ -589,7 +593,7 @@ export async function bridgeOperation(
       input.workerId,
       input.leaseToken,
       now,
-      now - MAX_RUNTIME_MS,
+      now,
     ),
     env.DB.prepare(
       "INSERT INTO proposals(id,job_id,project_id,owner,kind,base_revision,created_at,status,result) SELECT ?,id,project_id,owner,kind,base_revision,?,'pending',? FROM jobs WHERE id=? AND owner=? AND changes()=1",

@@ -72,7 +72,7 @@ On a freeform canvas, drag to place layers, use the corner/edge handles to resiz
 
 When the canvas or layers have focus, `Ctrl/⌘ C` copies a selection, `Ctrl/⌘ V` pastes, and `Ctrl/⌘ D` duplicates it. Freeform paste uses canvas coordinates; the legacy flow editor pastes into the selected container. Delete/Backspace removes the selection. Escape cancels an active gesture without adding an undo step. Image uploads merge into the latest project and are rejected after undo, restore, or a project switch. Images used by canvas layers must be detached from those layers before their board reference can be removed.
 
-Freeform AI requests require **BLAI Helper 1.1.0**. Designer continues to use Astra Medium through your ChatGPT Codex subscription. The helper and Worker negotiate canvas support; an older helper cannot replace an existing freeform screen with a flow result. See the [scene contract and implementation plan](docs/FREEFORM-CANVAS.md).
+Freeform AI requests require **BLAI Helper 1.1.0 or newer**. Use **1.1.1** with the updated Designer app for the longer wireframe generation allowance and completed-response timeout fix. Designer continues to use Astra Medium through your ChatGPT Codex subscription. The helper and Worker negotiate canvas support; an older helper cannot replace an existing freeform screen with a flow result. See the [scene contract and implementation plan](docs/FREEFORM-CANVAS.md).
 
 When another tab saves a newer revision, your edits remain visible. Download the unsaved copy before choosing **Reload saved version** if you want to keep both versions. A pending upload is not added during a project replacement; the board reports that it was not attached so it can be uploaded again.
 

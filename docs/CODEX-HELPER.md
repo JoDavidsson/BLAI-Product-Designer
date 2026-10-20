@@ -8,7 +8,7 @@ Designer runs **GPT-6 Astra at Medium reasoning** through the existing **ChatGPT
 
 The 872,000-token context is the current published maximum for `gpt-6-astra` in [OpenAI's Codex model catalog](https://github.com/openai/codex/blob/d28be12577cf5e267c97d3018a490d76da4d28e7/codex-rs/models-manager/models.json#L34). The catalog's default context is 272,000 tokens; this adapter explicitly selects the larger supported window. The app's bounded project snapshot, request validation, and structured-output limits are enforced separately; configuring the model context does not expand those application limits.
 
-Install **BLAI Helper 1.1.0** on the Linux computer running your helper to apply these Designer settings. The model settings take effect after the local installation succeeds.
+Install **BLAI Helper 1.1.1** on the Linux computer running your helper to apply these Designer settings. The model settings take effect after the local installation succeeds.
 
 ## Before installing
 
@@ -21,16 +21,18 @@ codex login status
 
 If Codex is missing or needs updating, run `npm install -g @openai/codex`. If it is not signed in with ChatGPT, run `codex login` and choose ChatGPT. The manager checks the login and the CLI features required by the configured tools; it does not sign in for you or copy your Codex login to Cloudflare.
 
-## Update an installed manager to 1.1.0
+## Update an installed manager to 1.1.1
 
-Version 1.1.0 adds editable freeform canvas designs to Designer. It retains GPT-6 Astra at Medium reasoning, the explicit 872,000-token model context, and your ChatGPT Codex subscription. Update the helper before generating or refining freeform screens; older helpers can still handle plan and legacy screen requests. Request progress and token counts introduced in 1.0.2 remain available. Counts appear when Codex reports usage at the end of a turn; unreported counts remain unknown. Updating retains your private profiles and ChatGPT sign-in.
+Version 1.1.1 gives full wireframe generation 19 minutes to produce a complete draft, within the updated server's 20-minute limit. It also preserves completed responses when the Codex process needs forced cleanup, instead of misreporting them as generation timeouts. Freeform canvas support, GPT-6 Astra at Medium reasoning, the explicit 872,000-token model context, and ChatGPT authentication are retained. Updating retains your private profiles and ChatGPT sign-in.
 
-1. On the Linux computer running the helper, open **Connect Codex** in Designer and download **BLAI Helper 1.1.0** into Downloads. The saved filename is `blai-helper-1.1.0.tar.gz`; if the browser adds a suffix, use that actual filename in the command below.
+Deploy the updated Designer Worker before distributing this helper. A 1.1.0-or-older Worker still ends running jobs at ten minutes, and an older helper still stops generation at nine minutes. Both sides need the update for the longer generation allowance; no protocol envelope changes are required.
+
+1. On the Linux computer running the helper, open **Connect Codex** in Designer and download **BLAI Helper 1.1.1** into Downloads. The saved filename is `blai-helper-1.1.1.tar.gz`; if the browser adds a suffix, use that actual filename in the command below.
 2. Run these commands in order. Stop if any command reports an error. Existing tool profiles and the ChatGPT sign-in are reused, so no settings download or `add` command is needed.
 
 ```sh
 blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs doctor
@@ -39,20 +41,20 @@ node bin/blai-helper.mjs install
 "$HOME/.local/bin/blai-helper" status
 ```
 
-The version command should print `BLAI Helper 1.1.0`. Installation restarts the shared service for all configured tools and updates the launcher to this new directory. **Keep the new extracted directory and its installed dependencies in place.** Keep the old release until the new helper connects. Then try a request in each app to check that Codex can complete work. If the new service cannot connect, installation restores the previous service configuration and reports the failure.
+The version command should print `BLAI Helper 1.1.1`. Installation restarts the shared service for all configured tools and updates the launcher to this new directory. **Keep the new extracted directory and its installed dependencies in place.** Keep the old release until the new helper connects. Then try a request in each app to check that Codex can complete work. If the new service cannot connect, installation restores the previous service configuration and reports the failure.
 
 Use these update instructions for an existing `blai-helper.service`. Moving from a standalone Writer or Designer helper requires importing its settings first and following the initial migration instructions below.
 
 ## First installation
 
 1. Open **Connect Codex** in Designer on your Linux computer.
-2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper-1.1.0.tar.gz` and `blai-designer-helper.json`.
+2. Download **BLAI Helper** and **Designer settings** into Downloads. They should be named `blai-helper-1.1.1.tar.gz` and `blai-designer-helper.json`.
 3. Stop any older helper running in a terminal with **Ctrl+C**. The installer handles known background services during migration.
 4. Open a terminal and run these commands in order. Stop if any command reports an error.
 
 ```sh
 blai_helper_dir="$(mktemp -d "$HOME/blai-helper.XXXXXX")"
-tar -xzf "$HOME/Downloads/blai-helper-1.1.0.tar.gz" -C "$blai_helper_dir"
+tar -xzf "$HOME/Downloads/blai-helper-1.1.1.tar.gz" -C "$blai_helper_dir"
 cd "$blai_helper_dir/blai-helper"
 npm ci --omit=dev
 node bin/blai-helper.mjs add designer --adapter designer --settings "$HOME/Downloads/blai-designer-helper.json"
@@ -110,7 +112,7 @@ The manager's source, update instructions, and adapter contract live in [BLAI/he
 
 The private settings download at `/api/helper/setup` requires the signed-in owner. The Worker must have `DESIGNER_OWNER_EMAIL`, `DESIGNER_BRIDGE_SECRET`, `DESIGNER_ACCESS_CLIENT_ID`, and `DESIGNER_ACCESS_CLIENT_SECRET` configured as described in the repository README. Use a Designer-specific Cloudflare Access service token and Service Auth policy. Keep browser access restricted to the allowed Google identity. Do not reuse Writer's bridge secret or put credentials in browser code.
 
-The shared archive contains source and locked dependency manifests only, with no account files or service credentials. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-product-designer` checkouts beside each other, then use `npm run build:release`. This builds the app and puts `blai-helper.tar.gz` in `dist/client/`. `npm run deploy` uses this release build automatically. Each application can serve a packaged manager release. Use the Designer download for version 1.1.0. A plain `npm run build` removes generated archives, so use `build:release` for the final production build.
+The shared archive contains source and locked dependency manifests only, with no account files or service credentials. Keep current `BLAI`, `ai-writing-tool`, and `BLAI-Product-Designer` checkouts beside each other, then use `npm run build:release`. This builds the app and puts `blai-helper.tar.gz` in `dist/client/`. The matching BLAI/helper 1.1.1 release is required: packaging rejects an older manager or a missing runtime-policy entry instead of producing a broken download. `npm run deploy` uses this release build automatically. Each application can serve a packaged manager release. Use the Designer download for version 1.1.1. A plain `npm run build` removes generated archives, so use `build:release` for the final production build.
 
 The standalone adapter is still available for development:
 
@@ -131,7 +133,9 @@ Every request is `POST /api/codex`, JSON, with `x-designer-bridge-key` and the `
 
 Stopping the helper interrupts active HTTP requests and prevents new completion attempts, including during final ownership checks and retry delays. Cancellation terminates the Codex process group; a process that ignores `SIGTERM` receives `SIGKILL` after two seconds.
 
-Supported jobs are `plan.assist`, `plan.review`, `wireframe.generate`, `wireframe.refine`, and `moodboard.direction`. The runner times out after 9 minutes, under the server's 10-minute job lifetime. Failed jobs return only bounded categories (`login`, `limit`, `timeout`, `invalid`, or `unavailable`). Product text, CLI transcripts, stderr, and credentials are not logged.
+Supported jobs are `plan.assist`, `plan.review`, `wireframe.generate`, `wireframe.refine`, and `moodboard.direction`. Full wireframe generation has a 19-minute runner deadline and 20-minute server lifetime; the other jobs retain 9/10 minutes. Both use the packaged `bridge/job-limits.json` policy, leaving one minute for validation and delivery. Waiting in the queue is separately limited to ten minutes. The 45-second ownership lease still requires regular helper check-ins, and cancellation remains immediate.
+
+After a final response and `turn.completed`, the runner bounds process cleanup separately from generation. A partial message without successful turn completion is never accepted after a timeout. Cancellation, invalid output, forbidden tools, and fatal events still reject the result. The app distinguishes generation/runtime expiry, waiting for a helper, and a lost connection; failed request details retain the helper version and last reported stage. Product text, CLI transcripts, stderr, and credentials are not logged.
 
 ## Data and process boundaries
 

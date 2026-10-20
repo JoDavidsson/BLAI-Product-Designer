@@ -1,0 +1,11 @@
+{
+  "queueMs": 600000,
+  "completionReserveMs": 60000,
+  "runtimeMs": {
+    "plan.assist": 600000,
+    "plan.review": 600000,
+    "wireframe.generate": 1200000,
+    "wireframe.refine": 600000,
+    "moodboard.direction": 600000
+  }
+}

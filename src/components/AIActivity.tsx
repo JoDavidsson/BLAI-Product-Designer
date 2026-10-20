@@ -19,6 +19,12 @@ const kindLabels: Record<AIJob['kind'], string> = {
   'wireframe.refine': 'Wireframe refinement',
   'moodboard.direction': 'Design direction',
 };
+const progressLabels: Record<NonNullable<AIJob['progressStage']>, string> = {
+  launching: 'Starting Codex',
+  'model-started': 'Codex started',
+  'response-received': 'Response received',
+  validating: 'Checking result',
+};
 
 export function jobStageLabel(job: AIJob, proposal?: AIProposal) {
   if (job.status === 'queued') return 'Waiting for helper';
@@ -30,18 +36,7 @@ export function jobStageLabel(job: AIJob, proposal?: AIProposal) {
     if (proposal?.status === 'dismissed') return 'Proposal dismissed';
     return 'Request completed';
   }
-  switch (job.progressStage) {
-    case 'launching':
-      return 'Starting Codex';
-    case 'model-started':
-      return 'Codex started';
-    case 'response-received':
-      return 'Response received';
-    case 'validating':
-      return 'Checking result';
-    default:
-      return 'Helper accepted request';
-  }
+  return job.progressStage ? progressLabels[job.progressStage] : 'Helper accepted request';
 }
 
 function timestamp(value?: string | null) {
@@ -253,6 +248,10 @@ export default function AIActivity({
                     <span>
                       {isActive ? 'Elapsed' : 'Duration'} {elapsed}
                     </span>
+                  )}
+                  {job.helperVersion && <span>Helper v{job.helperVersion}</span>}
+                  {(job.status === 'failed' || job.status === 'cancelled') && job.progressStage && (
+                    <span>Last reported stage: {progressLabels[job.progressStage]}</span>
                   )}
                   {job.status === 'running' && (
                     <span>
